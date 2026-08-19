@@ -1,0 +1,13 @@
+[project]
+name = "neurodan-generator"
+version = "0.1.0"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "aiosqlite",
+    "pydantic",
+]
+
+[tool.uv]
+package = false
