@@ -5,6 +5,9 @@ dependencies = [
     "aiogram",
     "httpx",
     "pydantic-settings",
+    "pytest",
+    "pytest-asyncio",
+    "respx",
 ]
 
 [tool.uv]
