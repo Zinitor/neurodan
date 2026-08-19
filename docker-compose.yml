@@ -1,0 +1,22 @@
+services:
+  generator:
+    build:
+      context: .
+      dockerfile: services/generator/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - services/generator/generator.db:/app/generator.db
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  bot:
+    build:
+      context: .
+      dockerfile: services/bot/Dockerfile
+    depends_on:
+      - generator
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - GENERATOR_URL=http://generator:8000
+    restart: always
