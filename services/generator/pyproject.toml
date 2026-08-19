@@ -9,6 +9,7 @@ dependencies = [
     "pydantic",
     "pytest",
     "pytest-asyncio",
+    "httpx",
 ]
 
 [tool.uv]
