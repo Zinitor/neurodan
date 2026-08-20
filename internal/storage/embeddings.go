@@ -27,7 +27,10 @@ func (c *Client) StoreEmbedding(ctx context.Context, chatID int64, text string, 
 		CollectionName: "sentence_embeddings",
 		Points:         points,
 	})
-	return fmt.Errorf("failed to upsert embedding: %w", err)
+	if err != nil {
+		return fmt.Errorf("failed to upsert embedding: %w", err)
+	}
+	return nil
 }
 
 func (c *Client) FindSimilar(ctx context.Context, chatID int64, vector []float32, threshold float32) ([]string, error) {
