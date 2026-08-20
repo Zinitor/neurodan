@@ -74,9 +74,17 @@ func (h *Handler) trainHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.ChatID == 0 {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "chat_id is required"})
+		return
+	}
+
 	transitions := h.engine.Train(req.Text)
 	for _, t := range transitions {
-		_ = h.storage.UpsertTransition(r.Context(), req.ChatID, t.Word1, t.Word2, t.NextWord, t.Weight)
+		if err := h.storage.UpsertTransition(r.Context(), req.ChatID, t.Word1, t.Word2, t.NextWord, t.Weight); err != nil {
+			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: "failed to persist transitions"})
+			return
+		}
 	}
 
 	vec, err := h.embedder.Embed(req.Text)
@@ -98,14 +106,19 @@ func (h *Handler) generateHandler(w http.ResponseWriter, r *http.Request) {
 		req.Length = 10
 	}
 
+	if req.ChatID == 0 {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "chat_id is required"})
+		return
+	}
+
+	transitions, err := h.storage.GetAllTransitions(r.Context(), req.ChatID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: "failed to fetch transitions"})
+		return
+	}
+
 	var result string
 	for attempt := 0; attempt < 5; attempt++ {
-		transitions, err := h.storage.GetAllTransitions(r.Context(), req.ChatID)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: "failed to fetch transitions"})
-			return
-		}
-
 		result = h.engine.Generate(transitions, req.Length, req.Seed)
 
 		vec, err := h.embedder.Embed(result)
