@@ -41,7 +41,7 @@ func TestGenerateReturnsText(t *testing.T) {
 		{Word1: "the", Word2: "mat", NextWord: "the", Weight: 1},
 	}
 
-	result := engine.Generate(transitions, 5, "the")
+	result := engine.Generate(transitions, 5, "the cat")
 	words := strings.Fields(result)
 
 	require.GreaterOrEqual(t, len(words), 2)

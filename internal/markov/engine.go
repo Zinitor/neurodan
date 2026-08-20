@@ -45,12 +45,8 @@ func (e *Engine) Generate(transitions []Transition, length int, seed string) str
 
 	words := strings.Fields(seed)
 	if len(words) < 2 {
-		if len(transitions) > 0 {
-			t := transitions[e.rng.Intn(len(transitions))]
-			words = []string{t.Word1, t.Word2}
-		} else {
-			return seed
-		}
+		t := transitions[e.rng.Intn(len(transitions))]
+		words = []string{t.Word1, t.Word2}
 	}
 
 	result := make([]string, len(words))
