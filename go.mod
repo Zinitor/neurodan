@@ -3,6 +3,7 @@ module github.com/aeremin/neurodan
 go 1.26.5
 
 require (
+	github.com/go-chi/chi/v5 v5.3.2
 	github.com/qdrant/go-client v1.19.0
 	github.com/stretchr/testify v1.12.1
 	github.com/yalue/onnxruntime_go v1.35.0

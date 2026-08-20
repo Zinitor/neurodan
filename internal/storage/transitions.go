@@ -59,6 +59,36 @@ func (c *Client) UpsertTransition(ctx context.Context, chatID int64, word1, word
 	return nil
 }
 
+func (c *Client) GetAllTransitions(ctx context.Context, chatID int64) ([]Transition, error) {
+	pointsClient := c.grpcClient.GetPointsClient()
+
+	resp, err := pointsClient.Scroll(ctx, &qdrant.ScrollPoints{
+		CollectionName: "markov_transitions",
+		Filter: &qdrant.Filter{
+			Must: []*qdrant.Condition{
+				qdrant.NewMatchInt("chat_id", chatID),
+			},
+		},
+		WithPayload: qdrant.NewWithPayloadEnable(true),
+		Limit:       qdrant.PtrOf(uint32(10000)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all transitions: %w", err)
+	}
+
+	var transitions []Transition
+	for _, point := range resp.GetResult() {
+		payload := point.GetPayload()
+		transitions = append(transitions, Transition{
+			Word1:    payload["word1"].GetStringValue(),
+			Word2:    payload["word2"].GetStringValue(),
+			NextWord: payload["next_word"].GetStringValue(),
+			Weight:   int(payload["weight"].GetIntegerValue()),
+		})
+	}
+	return transitions, nil
+}
+
 func (c *Client) GetTransitions(ctx context.Context, chatID int64, word1, word2 string) ([]Transition, error) {
 	pointsClient := c.grpcClient.GetPointsClient()
 
