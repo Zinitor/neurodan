@@ -10,6 +10,8 @@ dependencies = [
     "pytest",
     "pytest-asyncio",
     "httpx",
+    "sentence-transformers",
+    "numpy",
 ]
 
 [tool.uv]

@@ -10,3 +10,4 @@ wheels/
 .venv
 .env
 result.json
+.agents/
