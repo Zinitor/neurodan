@@ -1,22 +1,35 @@
 services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
   generator:
     build:
       context: .
-      dockerfile: services/generator/Dockerfile
+      dockerfile: Dockerfile.generator
     ports:
       - "8000:8000"
-    volumes:
-      - services/generator/generator.db:/app/generator.db
     environment:
-      - PYTHONUNBUFFERED=1
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6334
+      - MODEL_PATH=models/model.onnx
+    depends_on:
+      - qdrant
 
   bot:
     build:
       context: .
-      dockerfile: services/bot/Dockerfile
-    depends_on:
-      - generator
+      dockerfile: Dockerfile.bot
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
       - GENERATOR_URL=http://generator:8000
+    depends_on:
+      - generator
     restart: always
+
+volumes:
+  qdrant_data:
