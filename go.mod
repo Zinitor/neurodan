@@ -8,6 +8,7 @@ require (
 )
 
 require (
+	github.com/yalue/onnxruntime_go v1.35.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
