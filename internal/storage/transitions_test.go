@@ -22,24 +22,34 @@ func TestUpsertAndGetTransitions(t *testing.T) {
 
 	const chatID int64 = 12345
 
-	err = client.UpsertTransition(context.Background(), chatID, "hello", "world", "foo", 1)
+	tr := storage.Transition{
+		Order:    2,
+		Prefix:   []string{"hello", "world"},
+		NextWord: "foo",
+		Weight:   1,
+	}
+
+	err = client.UpsertTransition(context.Background(), chatID, tr)
 	require.NoError(t, err)
 
-	transitions, err := client.GetTransitions(context.Background(), chatID, "hello", "world")
+	transitions, err := client.GetAllTransitions(context.Background(), chatID)
 	require.NoError(t, err)
 	require.Len(t, transitions, 1)
 	require.Equal(t, "foo", transitions[0].NextWord)
+	require.Equal(t, []string{"hello", "world"}, transitions[0].Prefix)
 	require.Equal(t, 1, transitions[0].Weight)
 
-	err = client.UpsertTransition(context.Background(), chatID, "hello", "world", "foo", 1)
+	// Re-upserting the same transition aggregates weight instead of duplicating.
+	err = client.UpsertTransition(context.Background(), chatID, tr)
 	require.NoError(t, err)
 
-	transitions, err = client.GetTransitions(context.Background(), chatID, "hello", "world")
+	transitions, err = client.GetAllTransitions(context.Background(), chatID)
 	require.NoError(t, err)
 	require.Len(t, transitions, 1)
 	require.Equal(t, 2, transitions[0].Weight)
 
-	transitions, err = client.GetTransitions(context.Background(), chatID, "no", "match")
+	// Different chat is isolated.
+	other, err := client.GetAllTransitions(context.Background(), 999)
 	require.NoError(t, err)
-	require.Empty(t, transitions)
+	require.Empty(t, other)
 }

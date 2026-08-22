@@ -13,9 +13,9 @@ type Client struct {
 
 func NewClient(host string, port int) (*Client, error) {
 	client, err := qdrant.NewClient(&qdrant.Config{
-		Host:                 host,
-		Port:                 port,
-		PoolSize:             1,
+		Host:                   host,
+		Port:                   port,
+		PoolSize:               1,
 		SkipCompatibilityCheck: true,
 	})
 	if err != nil {
@@ -39,16 +39,16 @@ func (c *Client) EnsureCollections(ctx context.Context) error {
 		existMap[name] = true
 	}
 
-	if !existMap["markov_transitions"] {
+	if !existMap[markovCollection] {
 		err = c.grpcClient.CreateCollection(ctx, &qdrant.CreateCollection{
-			CollectionName: "markov_transitions",
+			CollectionName: markovCollection,
 			VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
 				Size:     1,
 				Distance: qdrant.Distance_Cosine,
 			}),
 		})
 		if err != nil {
-			return fmt.Errorf("failed to create markov_transitions: %w", err)
+			return fmt.Errorf("failed to create %s: %w", markovCollection, err)
 		}
 	}
 

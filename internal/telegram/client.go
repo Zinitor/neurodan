@@ -5,15 +5,82 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/aeremin/neurodan/internal/markov"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
+
+// Config holds the tunable behaviour of the bot.
+type Config struct {
+	// ReplyBase is the probability of replying to a fresh message.
+	ReplyBase float64
+	// ReplyGrowth is added to the reply probability for every message the bot
+	// could have replied to but didn't, so the bot gets more eager over time.
+	ReplyGrowth float64
+	// ReplyMax caps the stacking reply probability.
+	ReplyMax float64
+	// ReactionProb is the chance that a triggered reply is a bare reaction
+	// (emoji / kaomoji) instead of generated text.
+	ReactionProb float64
+	// ChainMax is the maximum number of consecutive messages the bot sends in
+	// one reply event (always at least 1).
+	ChainMax int
+	// Length is the length preset sent to the generator: short, medium, long.
+	Length string
+	// WindowSize is how many recent messages are kept as conversation context.
+	WindowSize int
+	// MaxContextWords caps the context payload sent to the generator.
+	MaxContextWords int
+}
+
+// reactions is sent as a standalone reply instead of generated text.
+var reactions = []string{
+	"😂", "🤡", "😏", "🔥", "💀", "😳", "🤌", "🙃", "😅", "😭",
+	"кек", "лол", "хз", "жесть", "мда", "бывает", "хых", "кринж",
+	"T_T", "...", "да ладно", "оно самое", "вот это поворот",
+}
+
+// helpText is the /help response.
+const helpText = `Привет! Я Нейрода́н — генерирую текст по-русски и не только 🤖
+
+Команды:
+/generate [слова] — сгенерировать текст. Можно указать, с чего начать.
+/anec [слова] — продолжить вашу фразу в духе анекдота.
+/help — показать эту справку.
+
+Стилизация:
+/on <фичи> — включить стилизацию.
+/off <фичи> — выключить стилизацию.
+/on или /off без аргументов — показать текущие настройки.
+
+Доступные фичи: caps, allcaps, punct, emotes, swearify, intellectualize
+Например: /off swearify caps`
+
+// helpFeatures lists the stylization features for /on /off commands.
+const helpFeatures = `Доступные фичи:
+caps — КАПС в случайном слове
+allcaps — фраза ЦЕЛИКОМ КАПСОМ
+punct — пунктуация (…, !, !!)
+emotes — реакции (😂, кек, лол)
+swearify — мат
+intellectualize — заумные слова
+
+Например: /off swearify allcaps`
 
 type Client struct {
 	bot          *tgbotapi.BotAPI
 	generatorURL string
+	cfg          Config
+	settings     *SettingsStore
+	selfUsername string
+
+	mu    sync.Mutex
+	chats map[int64]*chatState
 }
 
 type trainRequest struct {
@@ -22,25 +89,34 @@ type trainRequest struct {
 }
 
 type generateRequest struct {
-	Length int    `json:"length"`
-	Seed   string `json:"seed,omitempty"`
-	ChatID int64  `json:"chat_id"`
+	LengthCfg string          `json:"length_cfg,omitempty"`
+	Seed      string          `json:"seed,omitempty"`
+	Context   string          `json:"context,omitempty"`
+	Styling   *markov.Styling `json:"styling,omitempty"`
+	ChatID    int64           `json:"chat_id"`
 }
 
 type generateResponse struct {
 	Text string `json:"text"`
 }
 
-func NewClient(token, generatorURL string) *Client {
+func NewClient(token, generatorURL string, cfg Config, settings *SettingsStore) *Client {
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		panic(fmt.Sprintf("failed to create bot: %v", err))
 	}
 
-	return &Client{
+	c := &Client{
 		bot:          bot,
 		generatorURL: generatorURL,
+		cfg:          cfg,
+		settings:     settings,
+		chats:        make(map[int64]*chatState),
 	}
+	if bot.Self.UserName != "" {
+		c.selfUsername = bot.Self.UserName
+	}
+	return c
 }
 
 func (c *Client) Start() {
@@ -62,41 +138,199 @@ func (c *Client) Start() {
 	}
 }
 
+func (c *Client) handleCommand(msg *tgbotapi.Message) {
+	chatID := msg.Chat.ID
+	args := strings.TrimSpace(msg.CommandArguments())
+	switch msg.Command() {
+	case "generate":
+		c.generate(chatID, args)
+	case "anec":
+		c.anec(chatID, args)
+	case "help":
+		c.send(chatID, helpText)
+	case "on":
+		c.setFeatures(chatID, args, true)
+	case "off":
+		c.setFeatures(chatID, args, false)
+	default:
+		c.send(chatID, "Неизвестная команда. /help")
+	}
+}
+
+// anec continues the user's text in the style of a joke ("анекдот").
+func (c *Client) anec(chatID int64, seed string) {
+	text := c.doGenerate(generateRequest{
+		LengthCfg: "short",
+		Seed:      seed,
+		ChatID:    chatID,
+		Styling:   c.stylingFor(chatID),
+	})
+	if text != "" {
+		c.send(chatID, text)
+	}
+}
+
+// setFeatures handles /on and /off: enables/disables stylization features.
+func (c *Client) setFeatures(chatID int64, args string, enabled bool) {
+	if strings.TrimSpace(args) == "" {
+		c.send(chatID, c.settings.Summary(chatID))
+		return
+	}
+
+	verb := "Включила"
+	if !enabled {
+		verb = "Выключила"
+	}
+
+	var done, unknown []string
+	for _, raw := range strings.Fields(strings.ReplaceAll(args, ",", " ")) {
+		f := normalizeFeature(raw)
+		if !isValidFeature(f) {
+			unknown = append(unknown, raw)
+			continue
+		}
+		if err := c.settings.Set(chatID, f, enabled); err != nil {
+			log.Printf("failed to save settings for chat %d: %v", chatID, err)
+			c.send(chatID, "Не удалось сохранить настройки 😔")
+			return
+		}
+		done = append(done, f)
+	}
+
+	var b strings.Builder
+	if len(done) > 0 {
+		fmt.Fprintf(&b, "%s: %s", verb, strings.Join(done, ", "))
+	}
+	if len(unknown) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "Не знаю такие фичи: %s\n\n%s", strings.Join(unknown, ", "), helpFeatures)
+	}
+	if b.Len() == 0 {
+		b.WriteString("Не указана ни одна фича. /help")
+	}
+	c.send(chatID, b.String())
+}
+
+// stylingFor builds the generator styling config from per-chat settings.
+func (c *Client) stylingFor(chatID int64) *markov.Styling {
+	return &markov.Styling{
+		Caps:     c.settings.IsEnabled(chatID, FeatureCaps),
+		AllCaps:  c.settings.IsEnabled(chatID, FeatureAllCaps),
+		Punct:    c.settings.IsEnabled(chatID, FeaturePunct),
+		Emotes:   c.settings.IsEnabled(chatID, FeatureEmotes),
+		Swearify: c.settings.IsEnabled(chatID, FeatureSwear),
+		Intel:    c.settings.IsEnabled(chatID, FeatureIntel),
+	}
+}
+
 func (c *Client) handleMessage(msg *tgbotapi.Message) {
 	if msg.Text == "" {
 		return
 	}
+	chatID := msg.Chat.ID
 
-	go c.train(msg.Chat.ID, msg.Text)
-}
-
-func (c *Client) handleCommand(msg *tgbotapi.Message) {
-	switch msg.Command() {
-	case "generate":
-		seed := strings.TrimSpace(msg.CommandArguments())
-		c.generate(msg.Chat.ID, seed)
-	default:
-	}
-}
-
-func (c *Client) train(chatID int64, text string) error {
-	req := trainRequest{Text: text, ChatID: chatID}
-	return c.post("/train", req, nil)
-}
-
-func (c *Client) generate(chatID int64, seed string) {
-	req := generateRequest{Length: 10, Seed: seed, ChatID: chatID}
-	var resp generateResponse
-
-	err := c.post("/generate", req, &resp)
-	if err != nil {
-		reply := tgbotapi.NewMessage(chatID, "Error generating text")
-		c.bot.Send(reply)
+	mentioned, clean := stripMention(msg.Text, c.selfUsername)
+	if clean == "" {
 		return
 	}
 
-	reply := tgbotapi.NewMessage(chatID, resp.Text)
-	c.bot.Send(reply)
+	state := c.stateFor(chatID)
+
+	// The mention is never trained, but the rest of the message is.
+	go c.train(chatID, clean)
+
+	if !state.observeAndDecide(clean, mentioned, c.cfg) {
+		return
+	}
+
+	go c.replyTo(chatID, state)
+}
+
+// replyTo sends one reply event: either a bare reaction or a chain of up to
+// ChainMax generated messages, each seeded by the previous one.
+func (c *Client) replyTo(chatID int64, state *chatState) {
+	if state.randFloat64() < c.cfg.ReactionProb {
+		c.send(chatID, reactions[state.randInt(len(reactions))])
+		return
+	}
+
+	chainLen := 1 + state.randInt(c.cfg.ChainMax)
+	contextText := state.context()
+	for i := 0; i < chainLen; i++ {
+		text := c.doGenerate(generateRequest{
+			LengthCfg: c.cfg.Length,
+			Context:   contextText,
+			ChatID:    chatID,
+			Styling:   c.stylingFor(chatID),
+		})
+		if text == "" {
+			return
+		}
+		c.send(chatID, text)
+		contextText = lastWords(contextText+" "+text, c.cfg.MaxContextWords)
+		if i < chainLen-1 {
+			time.Sleep(time.Second)
+		}
+	}
+}
+
+func (c *Client) stateFor(chatID int64) *chatState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s, ok := c.chats[chatID]; ok {
+		return s
+	}
+	s := newChatState()
+	c.chats[chatID] = s
+	return s
+}
+
+func (c *Client) mention() string {
+	if c.selfUsername == "" {
+		return ""
+	}
+	return "@" + c.selfUsername
+}
+
+func (c *Client) train(chatID int64, text string) {
+	req := trainRequest{Text: text, ChatID: chatID}
+	if err := c.post("/train", req, nil); err != nil {
+		log.Printf("train error: %v", err)
+	}
+}
+
+// generate handles the /generate command, seeding generation with the
+// optional user-supplied words.
+func (c *Client) generate(chatID int64, seed string) {
+	text := c.doGenerate(generateRequest{
+		LengthCfg: c.cfg.Length,
+		Seed:      seed,
+		ChatID:    chatID,
+		Styling:   c.stylingFor(chatID),
+	})
+	if text != "" {
+		c.send(chatID, text)
+	}
+}
+
+// doGenerate posts a generate request and returns the generated text, or ""
+// on error.
+func (c *Client) doGenerate(req generateRequest) string {
+	var resp generateResponse
+	if err := c.post("/generate", req, &resp); err != nil {
+		log.Printf("generate error: %v", err)
+		return ""
+	}
+	return resp.Text
+}
+
+func (c *Client) send(chatID int64, text string) {
+	reply := tgbotapi.NewMessage(chatID, text)
+	if _, err := c.bot.Send(reply); err != nil {
+		log.Printf("send error: %v", err)
+	}
 }
 
 func (c *Client) post(path string, reqBody interface{}, respBody interface{}) error {
@@ -120,4 +354,46 @@ func (c *Client) post(path string, reqBody interface{}, respBody interface{}) er
 		return json.NewDecoder(resp.Body).Decode(respBody)
 	}
 	return nil
+}
+
+// stripMention removes the bot's @mention from text (case-insensitively) and
+// reports whether the text was addressed to the bot. The returned text
+// preserves the original case of everything except the removed mention.
+func stripMention(text, username string) (bool, string) {
+	if username == "" {
+		return false, strings.TrimSpace(text)
+	}
+	mention := strings.ToLower(username)
+	lower := strings.ToLower(text)
+	if !strings.Contains(lower, mention) {
+		return false, strings.TrimSpace(text)
+	}
+
+	// Walk the original text, skipping any occurrence of the (lowercased)
+	// mention. mention is ASCII so byte-index alignment holds.
+	var b strings.Builder
+	b.Grow(len(text))
+	for i := 0; i < len(text); {
+		if strings.HasPrefix(lower[i:], mention) {
+			i += len(mention)
+			b.WriteByte(' ')
+		} else {
+			b.WriteByte(text[i])
+			i++
+		}
+	}
+	// Drop a bare '@' left over from "@mention" and normalize whitespace.
+	cleaned := strings.ReplaceAll(b.String(), "@ ", " ")
+	return true, strings.Join(strings.Fields(cleaned), " ")
+}
+
+func lastWords(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	words := strings.Fields(s)
+	if len(words) <= n {
+		return s
+	}
+	return strings.Join(words[len(words)-n:], " ")
 }

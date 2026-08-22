@@ -10,24 +10,25 @@ import (
 	"testing"
 
 	"github.com/aeremin/neurodan/internal/api"
+	"github.com/aeremin/neurodan/internal/markov"
 	"github.com/stretchr/testify/require"
 )
 
 type mockStorage struct {
-	upsertTransitionFn  func(ctx context.Context, chatID int64, word1, word2, nextWord string, weight int) error
-	getAllTransitionsFn func(ctx context.Context, chatID int64) ([]api.Transition, error)
+	upsertTransitionFn  func(ctx context.Context, chatID int64, t markov.Transition) error
+	getAllTransitionsFn func(ctx context.Context, chatID int64) ([]markov.Transition, error)
 	storeEmbeddingFn    func(ctx context.Context, chatID int64, text string, vector []float32) error
 	findSimilarFn       func(ctx context.Context, chatID int64, vector []float32, threshold float32) ([]string, error)
 }
 
-func (m *mockStorage) UpsertTransition(ctx context.Context, chatID int64, word1, word2, nextWord string, weight int) error {
+func (m *mockStorage) UpsertTransition(ctx context.Context, chatID int64, t markov.Transition) error {
 	if m.upsertTransitionFn != nil {
-		return m.upsertTransitionFn(ctx, chatID, word1, word2, nextWord, weight)
+		return m.upsertTransitionFn(ctx, chatID, t)
 	}
 	return nil
 }
 
-func (m *mockStorage) GetAllTransitions(ctx context.Context, chatID int64) ([]api.Transition, error) {
+func (m *mockStorage) GetAllTransitions(ctx context.Context, chatID int64) ([]markov.Transition, error) {
 	if m.getAllTransitionsFn != nil {
 		return m.getAllTransitionsFn(ctx, chatID)
 	}
@@ -49,22 +50,30 @@ func (m *mockStorage) FindSimilar(ctx context.Context, chatID int64, vector []fl
 }
 
 type mockEngine struct {
-	trainFn    func(text string) []api.Transition
-	generateFn func(transitions []api.Transition, length int, seed string) string
+	trainFn    func(text string) []markov.Transition
+	generateFn func(transitions []markov.Transition, opts markov.GenerateOptions) string
+	stylizeFn  func(text string) string
 }
 
-func (m *mockEngine) Train(text string) []api.Transition {
+func (m *mockEngine) Train(text string) []markov.Transition {
 	if m.trainFn != nil {
 		return m.trainFn(text)
 	}
 	return nil
 }
 
-func (m *mockEngine) Generate(transitions []api.Transition, length int, seed string) string {
+func (m *mockEngine) Generate(transitions []markov.Transition, opts markov.GenerateOptions) string {
 	if m.generateFn != nil {
-		return m.generateFn(transitions, length, seed)
+		return m.generateFn(transitions, opts)
 	}
 	return "generated text"
+}
+
+func (m *mockEngine) Stylize(text string, _ markov.Styling) string {
+	if m.stylizeFn != nil {
+		return m.stylizeFn(text)
+	}
+	return text
 }
 
 type mockEmbedder struct {
@@ -139,21 +148,19 @@ func TestHealthHandler(t *testing.T) {
 }
 
 func TestTrainHandler(t *testing.T) {
-	var upserted []api.Transition
+	var upserted []markov.Transition
 	storage := &mockStorage{
-		upsertTransitionFn: func(ctx context.Context, chatID int64, word1, word2, nextWord string, weight int) error {
+		upsertTransitionFn: func(ctx context.Context, chatID int64, tr markov.Transition) error {
 			require.Equal(t, int64(42), chatID)
-			upserted = append(upserted, api.Transition{
-				Word1: word1, Word2: word2, NextWord: nextWord, Weight: weight,
-			})
+			upserted = append(upserted, tr)
 			return nil
 		},
 	}
 	engine := &mockEngine{
-		trainFn: func(text string) []api.Transition {
-			return []api.Transition{
-				{Word1: "hello", Word2: "beautiful", NextWord: "world", Weight: 1},
-				{Word1: "beautiful", Word2: "world", NextWord: "today", Weight: 1},
+		trainFn: func(text string) []markov.Transition {
+			return []markov.Transition{
+				{Order: 2, Prefix: []string{"hello", "beautiful"}, NextWord: "world", Weight: 1},
+				{Order: 2, Prefix: []string{"beautiful", "world"}, NextWord: "today", Weight: 1},
 			}
 		},
 	}
@@ -170,7 +177,7 @@ func TestTrainHandler(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, upserted, 2)
-	require.Equal(t, "hello", upserted[0].Word1)
+	require.Equal(t, "hello", upserted[0].Prefix[0])
 	require.Equal(t, "today", upserted[1].NextWord)
 
 	var resp api.StatusResponse
@@ -209,12 +216,12 @@ func TestTrainHandlerInvalidJSON(t *testing.T) {
 }
 
 func TestGenerateHandler(t *testing.T) {
-	var receivedTransitions []api.Transition
+	var receivedTransitions []markov.Transition
 	storage := &mockStorage{
-		getAllTransitionsFn: func(ctx context.Context, chatID int64) ([]api.Transition, error) {
+		getAllTransitionsFn: func(ctx context.Context, chatID int64) ([]markov.Transition, error) {
 			require.Equal(t, int64(99), chatID)
-			return []api.Transition{
-				{Word1: "a", Word2: "b", NextWord: "c", Weight: 1},
+			return []markov.Transition{
+				{Order: 2, Prefix: []string{"a", "b"}, NextWord: "c", Weight: 1},
 			}, nil
 		},
 		findSimilarFn: func(ctx context.Context, chatID int64, vector []float32, threshold float32) ([]string, error) {
@@ -222,10 +229,10 @@ func TestGenerateHandler(t *testing.T) {
 		},
 	}
 	engine := &mockEngine{
-		generateFn: func(transitions []api.Transition, length int, seed string) string {
+		generateFn: func(transitions []markov.Transition, opts markov.GenerateOptions) string {
 			receivedTransitions = transitions
-			require.Equal(t, 15, length)
-			require.Equal(t, "seed", seed)
+			require.Equal(t, markov.LengthLong, opts.Length)
+			require.Equal(t, "seed", opts.Seed)
 			return "a b c"
 		},
 	}
@@ -234,7 +241,7 @@ func TestGenerateHandler(t *testing.T) {
 	handler := api.NewHandler(storage, engine, embedder)
 	router := api.NewRouter(handler)
 
-	body, _ := json.Marshal(api.GenerateRequest{Length: 15, Seed: "seed", ChatID: 99})
+	body, _ := json.Marshal(api.GenerateRequest{LengthCfg: "long", Seed: "seed", ChatID: 99})
 	req := httptest.NewRequest(http.MethodPost, "/generate", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -242,7 +249,7 @@ func TestGenerateHandler(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, receivedTransitions, 1)
-	require.Equal(t, "a", receivedTransitions[0].Word1)
+	require.Equal(t, "a", receivedTransitions[0].Prefix[0])
 
 	var resp api.GenerateResponse
 	err := json.Unmarshal(w.Body.Bytes(), &resp)
@@ -250,11 +257,37 @@ func TestGenerateHandler(t *testing.T) {
 	require.Equal(t, "a b c", resp.Text)
 }
 
-func TestGenerateHandlerDefaultLength(t *testing.T) {
-	var receivedLength int
+func TestGenerateHandlerForwardsContext(t *testing.T) {
 	engine := &mockEngine{
-		generateFn: func(transitions []api.Transition, length int, seed string) string {
-			receivedLength = length
+		generateFn: func(transitions []markov.Transition, opts markov.GenerateOptions) string {
+			require.Equal(t, "last fifteen messages", opts.Context)
+			require.Empty(t, opts.Seed)
+			return "result"
+		},
+	}
+	storage := &mockStorage{
+		findSimilarFn: func(ctx context.Context, chatID int64, vector []float32, threshold float32) ([]string, error) {
+			return nil, nil
+		},
+	}
+
+	handler := api.NewHandler(storage, engine, &mockEmbedder{})
+	router := api.NewRouter(handler)
+
+	body, _ := json.Marshal(api.GenerateRequest{Context: "last fifteen messages", ChatID: 1})
+	req := httptest.NewRequest(http.MethodPost, "/generate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestGenerateHandlerDefaultLength(t *testing.T) {
+	var gotLength markov.LengthPreset
+	engine := &mockEngine{
+		generateFn: func(transitions []markov.Transition, opts markov.GenerateOptions) string {
+			gotLength = opts.Length
 			return "result"
 		},
 	}
@@ -274,7 +307,7 @@ func TestGenerateHandlerDefaultLength(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	require.Equal(t, 10, receivedLength)
+	require.Equal(t, markov.LengthMedium, gotLength)
 }
 
 func TestGenerateHandlerInvalidJSON(t *testing.T) {
@@ -290,7 +323,7 @@ func TestGenerateHandlerInvalidJSON(t *testing.T) {
 
 func TestGenerateHandlerStorageError(t *testing.T) {
 	storage := &mockStorage{
-		getAllTransitionsFn: func(ctx context.Context, chatID int64) ([]api.Transition, error) {
+		getAllTransitionsFn: func(ctx context.Context, chatID int64) ([]markov.Transition, error) {
 			return nil, errors.New("storage error")
 		},
 	}
@@ -309,8 +342,8 @@ func TestGenerateHandlerStorageError(t *testing.T) {
 func TestGenerateHandlerRetriesOnSimilar(t *testing.T) {
 	attempts := 0
 	storage := &mockStorage{
-		getAllTransitionsFn: func(ctx context.Context, chatID int64) ([]api.Transition, error) {
-			return []api.Transition{{Word1: "a", Word2: "b", NextWord: "c", Weight: 1}}, nil
+		getAllTransitionsFn: func(ctx context.Context, chatID int64) ([]markov.Transition, error) {
+			return []markov.Transition{{Order: 2, Prefix: []string{"a", "b"}, NextWord: "c", Weight: 1}}, nil
 		},
 		findSimilarFn: func(ctx context.Context, chatID int64, vector []float32, threshold float32) ([]string, error) {
 			attempts++
@@ -321,7 +354,7 @@ func TestGenerateHandlerRetriesOnSimilar(t *testing.T) {
 		},
 	}
 	engine := &mockEngine{
-		generateFn: func(transitions []api.Transition, length int, seed string) string {
+		generateFn: func(transitions []markov.Transition, opts markov.GenerateOptions) string {
 			return "generated"
 		},
 	}

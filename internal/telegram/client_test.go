@@ -2,6 +2,7 @@ package telegram_test
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/aeremin/neurodan/internal/telegram"
@@ -12,6 +13,8 @@ func TestNewClient(t *testing.T) {
 	if len(os.Getenv("BOT_TOKEN")) == 0 {
 		t.Skip("skipping: BOT_TOKEN not set")
 	}
-	client := telegram.NewClient("test-token", "http://localhost:8000")
+	store, err := telegram.NewSettingsStore(filepath.Join(t.TempDir(), "s.json"))
+	require.NoError(t, err)
+	client := telegram.NewClient("test-token", "http://localhost:8000", telegram.Config{}, store)
 	require.NotNil(t, client)
 }

@@ -3,24 +3,59 @@ package storage
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/qdrant/go-client/qdrant"
 )
 
+// Transition is a single variable-order n-gram step persisted in Qdrant.
+// Prefix has length Order.
 type Transition struct {
-	Word1    string
-	Word2    string
+	Order    int
+	Prefix   []string
 	NextWord string
 	Weight   int
 }
 
-func (c *Client) UpsertTransition(ctx context.Context, chatID int64, word1, word2, nextWord string, weight int) error {
+// markovCollection is the Qdrant collection holding transitions. It was
+// bumped to v2 when transitions became variable-order (prefix array + order)
+// instead of fixed bigrams.
+const markovCollection = "markov_transitions_v2"
+
+func transitionPointID(chatID int64, t Transition) string {
+	return fmt.Sprintf("%d\x00%d\x00%s\x00%s",
+		chatID, t.Order, strings.Join(t.Prefix, "\x00"), t.NextWord)
+}
+
+func transitionFromPayload(payload map[string]*qdrant.Value) Transition {
+	t := Transition{
+		Order:    int(payload["order"].GetIntegerValue()),
+		NextWord: payload["next_word"].GetStringValue(),
+		Weight:   int(payload["weight"].GetIntegerValue()),
+	}
+	// qdrant stores the prefix as an array of strings; a missing/invalid
+	// prefix falls back to an empty slice rather than crashing.
+	if list := payload["prefix"].GetListValue(); list != nil {
+		for _, v := range list.GetValues() {
+			t.Prefix = append(t.Prefix, v.GetStringValue())
+		}
+	}
+	if t.Order < 1 || t.Order > 3 {
+		t.Order = len(t.Prefix)
+	}
+	if t.Order < 1 || t.Order > 3 {
+		t.Order = 1
+	}
+	return t
+}
+
+func (c *Client) UpsertTransition(ctx context.Context, chatID int64, t Transition) error {
 	pointsClient := c.grpcClient.GetPointsClient()
 
-	pointID := fmt.Sprintf("%d:%s:%s:%s", chatID, word1, word2, nextWord)
+	pointID := transitionPointID(chatID, t)
 
 	existingResp, err := pointsClient.Get(ctx, &qdrant.GetPoints{
-		CollectionName: "markov_transitions",
+		CollectionName: markovCollection,
 		Ids:            []*qdrant.PointId{qdrant.NewIDUUID(pointID)},
 		WithPayload:    qdrant.NewWithPayloadEnable(true),
 	})
@@ -28,11 +63,15 @@ func (c *Client) UpsertTransition(ctx context.Context, chatID int64, word1, word
 		return fmt.Errorf("failed to get existing transition: %w", err)
 	}
 
-	totalWeight := weight
+	totalWeight := t.Weight
 	existing := existingResp.GetResult()
 	if len(existing) > 0 {
-		payload := existing[0].GetPayload()
-		totalWeight += int(payload["weight"].GetIntegerValue())
+		totalWeight += int(existing[0].GetPayload()["weight"].GetIntegerValue())
+	}
+
+	prefixValues := make([]*qdrant.Value, 0, len(t.Prefix))
+	for _, p := range t.Prefix {
+		prefixValues = append(prefixValues, qdrant.NewValueString(p))
 	}
 
 	points := []*qdrant.PointStruct{
@@ -41,16 +80,16 @@ func (c *Client) UpsertTransition(ctx context.Context, chatID int64, word1, word
 			Vectors: qdrant.NewVectors(0.0),
 			Payload: map[string]*qdrant.Value{
 				"chat_id":   qdrant.NewValueInt(chatID),
-				"word1":     qdrant.NewValueString(word1),
-				"word2":     qdrant.NewValueString(word2),
-				"next_word": qdrant.NewValueString(nextWord),
+				"order":     qdrant.NewValueInt(int64(t.Order)),
+				"prefix":    qdrant.NewValueFromList(prefixValues...),
+				"next_word": qdrant.NewValueString(t.NextWord),
 				"weight":    qdrant.NewValueInt(int64(totalWeight)),
 			},
 		},
 	}
 
 	_, err = pointsClient.Upsert(ctx, &qdrant.UpsertPoints{
-		CollectionName: "markov_transitions",
+		CollectionName: markovCollection,
 		Points:         points,
 	})
 	if err != nil {
@@ -63,60 +102,22 @@ func (c *Client) GetAllTransitions(ctx context.Context, chatID int64) ([]Transit
 	pointsClient := c.grpcClient.GetPointsClient()
 
 	resp, err := pointsClient.Scroll(ctx, &qdrant.ScrollPoints{
-		CollectionName: "markov_transitions",
+		CollectionName: markovCollection,
 		Filter: &qdrant.Filter{
 			Must: []*qdrant.Condition{
 				qdrant.NewMatchInt("chat_id", chatID),
 			},
 		},
 		WithPayload: qdrant.NewWithPayloadEnable(true),
-		Limit:       qdrant.PtrOf(uint32(10000)),
+		Limit:       qdrant.PtrOf(uint32(100000)),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get all transitions: %w", err)
 	}
 
-	var transitions []Transition
+	transitions := make([]Transition, 0, len(resp.GetResult()))
 	for _, point := range resp.GetResult() {
-		payload := point.GetPayload()
-		transitions = append(transitions, Transition{
-			Word1:    payload["word1"].GetStringValue(),
-			Word2:    payload["word2"].GetStringValue(),
-			NextWord: payload["next_word"].GetStringValue(),
-			Weight:   int(payload["weight"].GetIntegerValue()),
-		})
-	}
-	return transitions, nil
-}
-
-func (c *Client) GetTransitions(ctx context.Context, chatID int64, word1, word2 string) ([]Transition, error) {
-	pointsClient := c.grpcClient.GetPointsClient()
-
-	resp, err := pointsClient.Scroll(ctx, &qdrant.ScrollPoints{
-		CollectionName: "markov_transitions",
-		Filter: &qdrant.Filter{
-			Must: []*qdrant.Condition{
-				qdrant.NewMatchInt("chat_id", chatID),
-				qdrant.NewMatchKeyword("word1", word1),
-				qdrant.NewMatchKeyword("word2", word2),
-			},
-		},
-		WithPayload: qdrant.NewWithPayloadEnable(true),
-		Limit:       qdrant.PtrOf(uint32(1000)),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get transitions: %w", err)
-	}
-
-	var transitions []Transition
-	for _, point := range resp.GetResult() {
-		payload := point.GetPayload()
-		transitions = append(transitions, Transition{
-			Word1:    payload["word1"].GetStringValue(),
-			Word2:    payload["word2"].GetStringValue(),
-			NextWord: payload["next_word"].GetStringValue(),
-			Weight:   int(payload["weight"].GetIntegerValue()),
-		})
+		transitions = append(transitions, transitionFromPayload(point.GetPayload()))
 	}
 	return transitions, nil
 }

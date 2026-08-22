@@ -18,20 +18,25 @@ type storageAdapter struct {
 	client *storage.Client
 }
 
-func (a *storageAdapter) UpsertTransition(ctx context.Context, chatID int64, word1, word2, nextWord string, weight int) error {
-	return a.client.UpsertTransition(ctx, chatID, word1, word2, nextWord, weight)
+func (a *storageAdapter) UpsertTransition(ctx context.Context, chatID int64, t markov.Transition) error {
+	return a.client.UpsertTransition(ctx, chatID, storage.Transition{
+		Order:    t.Order,
+		Prefix:   t.Prefix,
+		NextWord: t.NextWord,
+		Weight:   t.Weight,
+	})
 }
 
-func (a *storageAdapter) GetAllTransitions(ctx context.Context, chatID int64) ([]api.Transition, error) {
+func (a *storageAdapter) GetAllTransitions(ctx context.Context, chatID int64) ([]markov.Transition, error) {
 	txs, err := a.client.GetAllTransitions(ctx, chatID)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]api.Transition, len(txs))
+	result := make([]markov.Transition, len(txs))
 	for i, t := range txs {
-		result[i] = api.Transition{
-			Word1:    t.Word1,
-			Word2:    t.Word2,
+		result[i] = markov.Transition{
+			Order:    t.Order,
+			Prefix:   t.Prefix,
 			NextWord: t.NextWord,
 			Weight:   t.Weight,
 		}
@@ -45,37 +50,6 @@ func (a *storageAdapter) StoreEmbedding(ctx context.Context, chatID int64, text 
 
 func (a *storageAdapter) FindSimilar(ctx context.Context, chatID int64, vector []float32, threshold float32) ([]string, error) {
 	return a.client.FindSimilar(ctx, chatID, vector, threshold)
-}
-
-type engineAdapter struct {
-	engine *markov.Engine
-}
-
-func (a *engineAdapter) Train(text string) []api.Transition {
-	txs := a.engine.Train(text)
-	result := make([]api.Transition, len(txs))
-	for i, t := range txs {
-		result[i] = api.Transition{
-			Word1:    t.Word1,
-			Word2:    t.Word2,
-			NextWord: t.NextWord,
-			Weight:   t.Weight,
-		}
-	}
-	return result
-}
-
-func (a *engineAdapter) Generate(transitions []api.Transition, length int, seed string) string {
-	txs := make([]markov.Transition, len(transitions))
-	for i, t := range transitions {
-		txs[i] = markov.Transition{
-			Word1:    t.Word1,
-			Word2:    t.Word2,
-			NextWord: t.NextWord,
-			Weight:   t.Weight,
-		}
-	}
-	return a.engine.Generate(txs, length, seed)
 }
 
 func main() {
@@ -104,7 +78,7 @@ func main() {
 
 	handler := api.NewHandler(
 		&storageAdapter{client: client},
-		&engineAdapter{engine: engine},
+		engine,
 		embedder,
 	)
 	router := api.NewRouter(handler)
