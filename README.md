@@ -23,7 +23,8 @@ All commands are in Russian, since that's the bot's home crowd.
 | Command | Description |
 | --- | --- |
 | `/generate [слова]` | Generate text. Optionally seed it with a starting phrase. |
-| `/anec [слова]` | Continue the given text in the style of a joke (seeded generation, short). |
+| `/anec [слова]` | Continue the given text in the style of a joke. The seed is echoed and bridged into a precomputed model trained on ~145k Russian anecdotes; output is not stylized. |
+| `/anec s [слова]` | Same as `/anec`, but applies the chat's stylization settings. |
 | `/help` | Show help (in Russian). |
 | `/on [фичи]` | Enable stylization features. Without arguments, shows current settings. |
 | `/off [фичи]` | Disable stylization features. |
@@ -39,7 +40,7 @@ Toggleable stylization features (`/on` / `/off`):
 | `swearify` | Russian profanity |
 | `intellectualize` | High-register "intellectual" filler (концептуально, эмпирически) |
 
-Toggles are stored per chat in `SETTINGS_FILE` and survive bot restarts. Multiple features can be listed at once, comma- or space-separated (e.g. `/off swearify, allcaps`). Stylization applies to all generated text, including `/anec` and auto-replies.
+Toggles are stored per chat in `SETTINGS_FILE` and survive bot restarts. Multiple features can be listed at once, comma- or space-separated (e.g. `/off swearify, allcaps`). Stylization applies to all generated text, including `/anec s` and auto-replies. Command invocations (text starting with `/`) are never trained on.
 
 ## Prerequisites
 
@@ -71,7 +72,18 @@ Toggles are stored per chat in `SETTINGS_FILE` and survive bot restarts. Multipl
 QDRANT_HOST=localhost
 QDRANT_PORT=6334
 MODEL_PATH=models/model.onnx
+ANECDOTES_PATH=data/anecdotes/anecdotes_clean.txt
+ANECDOTES_INDEX=data/anecdotes/anecdotes.idx
 PORT=8000
+```
+
+`ANECDOTES_PATH` (optional) points at the cleaned one-joke-per-line corpus. When set, the generator trains a Markov model over it at startup and serves `/anec` requests from it. `ANECDOTES_INDEX` (optional) is a cache path for the trained model: if the file exists it is loaded directly (fast startup); otherwise the model is built from `ANECDOTES_PATH` and persisted there. Without `ANECDOTES_PATH`, `/anec` returns HTTP 503.
+
+The corpus is not bundled with the repo. Build it with:
+
+```bash
+python3 scripts/download_anecdotes.py   # -> data/anecdotes/anecdotes.txt
+python3 scripts/filter_anecdotes.py     # -> data/anecdotes/anecdotes_clean.txt
 ```
 
 ## Project Structure

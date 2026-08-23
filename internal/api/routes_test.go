@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/aeremin/neurodan/internal/api"
@@ -53,6 +54,11 @@ type mockEngine struct {
 	trainFn    func(text string) []markov.Transition
 	generateFn func(transitions []markov.Transition, opts markov.GenerateOptions) string
 	stylizeFn  func(text string) string
+
+	generateIndexFn func(idx *markov.Index, opts markov.GenerateOptions) string
+
+	stylizeMu sync.Mutex
+	stylings  []markov.Styling
 }
 
 func (m *mockEngine) Train(text string) []markov.Transition {
@@ -69,7 +75,20 @@ func (m *mockEngine) Generate(transitions []markov.Transition, opts markov.Gener
 	return "generated text"
 }
 
-func (m *mockEngine) Stylize(text string, _ markov.Styling) string {
+func (m *mockEngine) GenerateIndex(idx *markov.Index, opts markov.GenerateOptions) string {
+	if m.generateIndexFn != nil {
+		return m.generateIndexFn(idx, opts)
+	}
+	if m.generateFn != nil {
+		return m.generateFn(nil, opts)
+	}
+	return "generated anecdote"
+}
+
+func (m *mockEngine) Stylize(text string, s markov.Styling) string {
+	m.stylizeMu.Lock()
+	m.stylings = append(m.stylings, s)
+	m.stylizeMu.Unlock()
 	if m.stylizeFn != nil {
 		return m.stylizeFn(text)
 	}

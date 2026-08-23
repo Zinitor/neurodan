@@ -19,7 +19,10 @@ type GenerateRequest struct {
 	Context string `json:"context,omitempty"`
 	// Styling controls which stylization passes run. Nil means defaults.
 	Styling *markov.Styling `json:"styling,omitempty"`
-	ChatID  int64           `json:"chat_id"`
+	// Anecdote, when true, generates from the anecdote corpus seeded by
+	// Seed, ignoring chat transitions entirely.
+	Anecdote bool  `json:"anecdote,omitempty"`
+	ChatID   int64 `json:"chat_id"`
 }
 
 type GenerateResponse struct {

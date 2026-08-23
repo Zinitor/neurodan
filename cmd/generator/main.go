@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/aeremin/neurodan/internal/anecdote"
 	"github.com/aeremin/neurodan/internal/api"
 	"github.com/aeremin/neurodan/internal/embedding"
 	"github.com/aeremin/neurodan/internal/markov"
@@ -81,6 +82,24 @@ func main() {
 		engine,
 		embedder,
 	)
+
+	// The /anec endpoint is powered by the anecdote corpus. Loading it is
+	// optional: without ANECDOTES_PATH, /anec returns 503.
+	//
+	// The corpus is trained into a markov.Index once at startup. If
+	// ANECDOTES_INDEX points to a precomputed index it is loaded directly;
+	// otherwise the corpus at ANECDOTES_PATH is trained on the fly (and,
+	// when ANECDOTES_INDEX is set, the result is persisted there for faster
+	// future startups).
+	if path := getEnv("ANECDOTES_PATH", ""); path != "" {
+		idx, err := loadAnecdoteIndex(path, getEnv("ANECDOTES_INDEX", ""))
+		if err != nil {
+			log.Fatalf("Failed to load anecdote corpus: %v", err)
+		}
+		handler.SetAnecdotes(idx)
+		log.Printf("Loaded anecdote model (%d edges)", idx.Len())
+	}
+
 	router := api.NewRouter(handler)
 
 	addr := fmt.Sprintf(":%s", port)
@@ -93,4 +112,41 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// loadAnecdoteIndex returns the precomputed joke model. When indexPath is
+// non-empty and the file exists it is loaded directly; otherwise the corpus
+// at jokesPath is trained. If indexPath is set but empty (a missing cache)
+// the freshly built index is persisted there.
+func loadAnecdoteIndex(jokesPath, indexPath string) (*markov.Index, error) {
+	// Fast path: use a precomputed index if present.
+	if indexPath != "" {
+		if f, err := os.Open(indexPath); err == nil {
+			defer f.Close()
+			idx, derr := markov.DecodeIndex(f)
+			if derr == nil {
+				return idx, nil
+			}
+			log.Printf("WARNING: failed to decode %s (%v), retraining", indexPath, derr)
+		}
+	}
+
+	jokes, err := anecdote.LoadJokes(jokesPath)
+	if err != nil {
+		return nil, err
+	}
+	idx := anecdote.BuildIndex(jokes)
+	log.Printf("Trained anecdote model on %d jokes", len(jokes))
+
+	if indexPath != "" {
+		if f, err := os.Create(indexPath); err == nil {
+			defer f.Close()
+			if err := idx.Encode(f); err != nil {
+				log.Printf("WARNING: failed to persist anecdote index: %v", err)
+			} else {
+				log.Printf("Persisted anecdote index to %s", indexPath)
+			}
+		}
+	}
+	return idx, nil
 }

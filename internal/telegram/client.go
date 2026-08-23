@@ -51,6 +51,7 @@ const helpText = `Привет! Я Нейрода́н — генерирую т�
 Команды:
 /generate [слова] — сгенерировать текст. Можно указать, с чего начать.
 /anec [слова] — продолжить вашу фразу в духе анекдота.
+/anec s [слова] — то же, но со стилизацией.
 /help — показать эту справку.
 
 Стилизация:
@@ -93,6 +94,7 @@ type generateRequest struct {
 	Seed      string          `json:"seed,omitempty"`
 	Context   string          `json:"context,omitempty"`
 	Styling   *markov.Styling `json:"styling,omitempty"`
+	Anecdote  bool            `json:"anecdote,omitempty"`
 	ChatID    int64           `json:"chat_id"`
 }
 
@@ -158,16 +160,39 @@ func (c *Client) handleCommand(msg *tgbotapi.Message) {
 }
 
 // anec continues the user's text in the style of a joke ("анекдот").
-func (c *Client) anec(chatID int64, seed string) {
+//
+// The command is un-stylized by default; a leading "s" flag
+// ("/anec s [текст]") opts into the chat's stylization settings.
+func (c *Client) anec(chatID int64, args string) {
+	stylize, seed := parseAnecdoteArgs(args)
+
+	var styling *markov.Styling
+	if stylize {
+		styling = c.stylingFor(chatID)
+	}
+
 	text := c.doGenerate(generateRequest{
 		LengthCfg: "short",
 		Seed:      seed,
 		ChatID:    chatID,
-		Styling:   c.stylingFor(chatID),
+		Styling:   styling,
+		Anecdote:  true,
 	})
 	if text != "" {
 		c.send(chatID, text)
 	}
+}
+
+// parseAnecdoteArgs splits the raw /anec arguments into a stylize flag and
+// the seed text. A leading "s" (case-insensitive) as the first token opts
+// into stylization: "/anec s [текст]".
+func parseAnecdoteArgs(args string) (stylize bool, seed string) {
+	fields := strings.Fields(args)
+	if len(fields) > 0 && strings.EqualFold(fields[0], "s") {
+		stylize = true
+		fields = fields[1:]
+	}
+	return stylize, strings.Join(fields, " ")
 }
 
 // setFeatures handles /on and /off: enables/disables stylization features.
@@ -213,6 +238,12 @@ func (c *Client) setFeatures(chatID int64, args string, enabled bool) {
 	c.send(chatID, b.String())
 }
 
+// isCommandText reports whether text looks like a bot command invocation
+// ("/anec foo", "/start@MyBot") that should never be trained on.
+func isCommandText(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), "/")
+}
+
 // stylingFor builds the generator styling config from per-chat settings.
 func (c *Client) stylingFor(chatID int64) *markov.Styling {
 	return &markov.Styling{
@@ -233,6 +264,13 @@ func (c *Client) handleMessage(msg *tgbotapi.Message) {
 
 	mentioned, clean := stripMention(msg.Text, c.selfUsername)
 	if clean == "" {
+		return
+	}
+
+	// Never learn from command invocations (incl. /anec). Commands are
+	// normally routed to handleCommand, but in groups a command can arrive
+	// here; command-like text is noise the bot shouldn't internalize.
+	if isCommandText(clean) {
 		return
 	}
 

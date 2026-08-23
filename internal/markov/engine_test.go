@@ -90,9 +90,11 @@ func TestGenerateRespectsLengthPreset(t *testing.T) {
 		transitions = append(transitions, engine.Train(s)...)
 	}
 
+	// The short preset's 1-5 word target is relative to the seed (2 words),
+	// so the total stays small but never echoes the seed verbatim.
 	short := engine.Generate(transitions, markov.GenerateOptions{Seed: "один два", Length: markov.LengthShort})
-	require.LessOrEqual(t, len(strings.Fields(short)), 5, "short preset should stay tiny, got %q", short)
-	require.GreaterOrEqual(t, len(short), 1)
+	require.LessOrEqual(t, len(strings.Fields(short)), 7, "short preset should stay tiny, got %q", short)
+	require.GreaterOrEqual(t, len(strings.Fields(short)), 3)
 
 	long := engine.Generate(transitions, markov.GenerateOptions{Seed: "один два", Length: markov.LengthLong})
 	require.GreaterOrEqual(t, len(strings.Fields(long)), 2)

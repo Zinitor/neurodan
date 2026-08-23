@@ -19,3 +19,6 @@ models/*.onnx_data
 # Go build artifacts
 /bot
 /generator
+
+# Downloaded datasets
+/data/anecdotes/

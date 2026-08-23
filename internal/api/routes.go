@@ -21,6 +21,7 @@ type Storage interface {
 type Engine interface {
 	Train(text string) []markov.Transition
 	Generate(transitions []markov.Transition, opts markov.GenerateOptions) string
+	GenerateIndex(idx *markov.Index, opts markov.GenerateOptions) string
 	Stylize(text string, s markov.Styling) string
 }
 
@@ -32,6 +33,10 @@ type Handler struct {
 	storage  Storage
 	engine   Engine
 	embedder Embedder
+
+	// anecdotes is the precomputed joke model backing /anec. When nil, /anec
+	// returns 503.
+	anecdotes *markov.Index
 }
 
 func NewHandler(storage Storage, engine Engine, embedder Embedder) *Handler {
@@ -40,6 +45,11 @@ func NewHandler(storage Storage, engine Engine, embedder Embedder) *Handler {
 		engine:   engine,
 		embedder: embedder,
 	}
+}
+
+// SetAnecdotes enables the /anec endpoint with a precomputed joke model.
+func (h *Handler) SetAnecdotes(idx *markov.Index) {
+	h.anecdotes = idx
 }
 
 func NewRouter(h *Handler) http.Handler {
@@ -102,6 +112,11 @@ func (h *Handler) generateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Anecdote {
+		h.anecdoteHandler(w, req)
+		return
+	}
+
 	length := resolveLength(req)
 
 	transitions, err := h.storage.GetAllTransitions(r.Context(), req.ChatID)
@@ -136,6 +151,31 @@ func (h *Handler) generateHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Styling != nil {
 		styling = *req.Styling
 	}
+	writeJSON(w, http.StatusOK, GenerateResponse{Text: h.engine.Stylize(result, styling)})
+}
+
+// anecdoteHandler serves a /anec request: it bridges the user's seed into the
+// precomputed joke model and generates an unbounded continuation. It never
+// touches chat transitions or embeddings. Styling comes straight from the
+// request (which the bot uses to leave /anec un-stylized unless the user
+// opted in via the "s" flag).
+func (h *Handler) anecdoteHandler(w http.ResponseWriter, req GenerateRequest) {
+	if h.anecdotes == nil {
+		writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "anecdote corpus not configured"})
+		return
+	}
+
+	// Preserve the request styling exactly: an omitted Styling means no
+	// stylization for anecdotes, never DefaultStyling.
+	var styling markov.Styling
+	if req.Styling != nil {
+		styling = *req.Styling
+	}
+
+	result := h.engine.GenerateIndex(h.anecdotes, markov.GenerateOptions{
+		Seed:   req.Seed,
+		Length: markov.LengthUnbounded,
+	})
 	writeJSON(w, http.StatusOK, GenerateResponse{Text: h.engine.Stylize(result, styling)})
 }
 

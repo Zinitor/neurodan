@@ -34,6 +34,10 @@ const (
 	LengthShort LengthPreset = iota
 	LengthMedium
 	LengthLong
+	// LengthUnbounded generates until the chain dead-ends or the preset's
+	// maxWords hard cap is hit. Used by /anec where the seed is a prompt to
+	// continue, not a length target.
+	LengthUnbounded
 )
 
 // ParseLengthPreset parses a preset name ("short", "medium", "long").
@@ -45,6 +49,8 @@ func ParseLengthPreset(s string) (LengthPreset, bool) {
 		return LengthMedium, true
 	case "long":
 		return LengthLong, true
+	case "unbounded":
+		return LengthUnbounded, true
 	default:
 		return LengthMedium, false
 	}
@@ -56,6 +62,8 @@ func (p LengthPreset) String() string {
 		return "short"
 	case LengthLong:
 		return "long"
+	case LengthUnbounded:
+		return "unbounded"
 	default:
 		return "medium"
 	}
@@ -75,6 +83,9 @@ var lengthConfigs = map[LengthPreset]lengthConfig{
 	LengthMedium: {minWords: 6, maxWords: 15, orderProbs: [3]float64{0.15, 0.45, 0.4}},
 	// long: 16-40 words, prefers order-3 so text is more grammatical.
 	LengthLong: {minWords: 16, maxWords: 40, orderProbs: [3]float64{0.05, 0.35, 0.6}},
+	// unbounded: generate until the chain dies or the hard cap (maxWords).
+	// The seed is a prompt to continue, never a length target.
+	LengthUnbounded: {minWords: 1, maxWords: 200, orderProbs: [3]float64{0.1, 0.35, 0.55}},
 }
 
 // GenerateOptions configures a single generation pass.
@@ -96,14 +107,17 @@ type candidate struct {
 	weight int
 }
 
-// index is an in-memory lookup of transitions keyed by order and prefix.
-type index struct {
+// Index is an in-memory lookup of transitions keyed by order and prefix.
+// It is safe for concurrent reads; build it once and share it.
+type Index struct {
 	// m[order][prefixKey][nextWord] = aggregateWeight
 	m map[int]map[string]map[string]int
 }
 
-func newIndex(transitions []Transition) *index {
-	idx := &index{m: make(map[int]map[string]map[string]int, maxOrder)}
+// NewIndex builds an Index from raw transitions, aggregating duplicate
+// (order, prefix, nextWord) tuples into a single weighted entry.
+func NewIndex(transitions []Transition) *Index {
+	idx := &Index{m: make(map[int]map[string]map[string]int, maxOrder)}
 	for _, t := range transitions {
 		order := t.Order
 		if order < 1 || order > maxOrder || len(t.Prefix) != order {
@@ -124,8 +138,22 @@ func newIndex(transitions []Transition) *index {
 	return idx
 }
 
+// Len reports the number of distinct next-word edges in the index.
+func (idx *Index) Len() int {
+	if idx == nil {
+		return 0
+	}
+	n := 0
+	for _, byPrefix := range idx.m {
+		for _, byNext := range byPrefix {
+			n += len(byNext)
+		}
+	}
+	return n
+}
+
 // hasPrefix reports whether words (length 1..maxOrder) is a known prefix.
-func (idx *index) hasPrefix(words []string) bool {
+func (idx *Index) hasPrefix(words []string) bool {
 	order := len(words)
 	if order < 1 || order > maxOrder {
 		return false
@@ -134,10 +162,28 @@ func (idx *index) hasPrefix(words []string) bool {
 	return len(idx.m[order][key]) > 0
 }
 
+// hasContinuation reports whether generation can continue from the window's
+// tail, i.e. some suffix of window (length 1..maxOrder) is a known prefix.
+func (idx *Index) hasContinuation(window []string) bool {
+	if idx == nil {
+		return false
+	}
+	for order := 1; order <= maxOrder; order++ {
+		if len(window) < order {
+			continue
+		}
+		key := strings.Join(window[len(window)-order:], "\x00")
+		if len(idx.m[order][key]) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // randomStart returns a random order-1 prefix to seed generation from when no
 // seed or context is available. It returns nil if the model has no order-1
 // transitions.
-func (idx *index) randomStart(r *rand.Rand) []string {
+func (idx *Index) randomStart(r *rand.Rand) []string {
 	order1 := idx.m[1]
 	if len(order1) == 0 {
 		return nil
@@ -155,7 +201,7 @@ func (idx *index) randomStart(r *rand.Rand) []string {
 // next samples the next word following the given context words, attempting
 // the requested order first and falling back to lower orders. ok is false if
 // no continuation exists.
-func (idx *index) next(r *rand.Rand, words []string, probs *[maxOrder]float64) (string, bool) {
+func (idx *Index) next(r *rand.Rand, words []string, probs *[maxOrder]float64) (string, bool) {
 	start := pickOrder(r, probs)
 	for order := start; order >= 1; order-- {
 		if len(words) < order {
@@ -246,19 +292,32 @@ func (e *Engine) Train(text string) []Transition {
 // random order-1 prefix. It then continues for as many words as the length
 // preset asks for, or until no continuation exists.
 func (e *Engine) Generate(transitions []Transition, opts GenerateOptions) string {
+	return e.GenerateIndex(NewIndex(transitions), opts)
+}
+
+// coldOpenSeparator is inserted between the echoed seed and a fresh random
+// anecdote when nothing in the seed bridges into the model.
+const coldOpenSeparator = "\n"
+
+// GenerateIndex is Generate, but over a prebuilt Index. It is safe for
+// concurrent use.
+func (e *Engine) GenerateIndex(idx *Index, opts GenerateOptions) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.generateIndexLocked(idx, opts)
+}
 
-	idx := newIndex(transitions)
-	if len(idx.m) == 0 {
+func (e *Engine) generateIndexLocked(idx *Index, opts GenerateOptions) string {
+	if idx == nil || len(idx.m) == 0 {
 		return ""
 	}
 
-	var result []string
 	seed := opts.Seed
 	if seed == "" && opts.Context != "" {
 		seed = bridge(idx, opts.Context)
 	}
+
+	var result []string
 	if seed != "" {
 		result = append(result, strings.Fields(seed)...)
 	} else if start := idx.randomStart(e.rng); start != nil {
@@ -266,22 +325,89 @@ func (e *Engine) Generate(transitions []Transition, opts GenerateOptions) string
 		// bot can still self-initiate.
 		result = append(result, start...)
 	}
+	if len(result) == 0 {
+		return ""
+	}
 
 	cfg, ok := lengthConfigs[opts.Length]
 	if !ok {
 		cfg = lengthConfigs[LengthMedium]
 	}
-	target := cfg.minWords + e.rng.Intn(cfg.maxWords-cfg.minWords+1)
 
+	// Level 1: the seed's tail may end in words that don't bridge. Walk the
+	// anchor backward (dropping trailing words) until the longest prefix that
+	// can continue is found. The full seed is echoed; only the continuation
+	// anchor shrinks. This is what makes "/anec шёл программист" continue from
+	// "шёл" when "программист" is out of vocabulary.
+	anchor := result
+	for len(anchor) > 1 && !idx.hasContinuation(anchor) {
+		anchor = anchor[:len(anchor)-1]
+	}
+
+	// For every preset the seed is a prompt, not a length budget: the target
+	// counts words past the seed so a long seed is never echoed back verbatim.
+	// LengthUnbounded caps at the preset's maxWords hard limit instead.
+	target := cfg.minWords + e.rng.Intn(cfg.maxWords-cfg.minWords+1)
+	hardCap := opts.Length == LengthUnbounded
+	if hardCap {
+		target = cfg.maxWords
+	}
+	limit := target + len(result)
+	if hardCap && limit > cfg.maxWords {
+		limit = cfg.maxWords
+	}
+
+	continued := false
 	// Bound iterations so a degenerate order-1 graph cannot loop forever.
-	for i := 0; len(result) < target && i < target*4; i++ {
-		next, ok := idx.next(e.rng, result, &cfg.orderProbs)
-		if !ok {
+	for i := 0; i < cfg.maxWords*4+1; i++ {
+		if len(result) >= limit {
 			break
 		}
-		result = append(result, next)
+		next, ok := idx.next(e.rng, anchor, &cfg.orderProbs)
+		if ok {
+			result = append(result, next)
+			continued = true
+			anchor = tailWords(result, maxOrder)
+			continue
+		}
+		// Dead end: back off one word and retry with a shorter context so the
+		// chain can keep flowing even when the last words don't bridge.
+		if len(anchor) > 1 {
+			anchor = anchor[1:]
+			continue
+		}
+		break
 	}
+
+	// Level 2 cold open: nothing bridged at all — the seed shares no n-gram
+	// with the model (e.g. an entirely out-of-vocabulary seed). Instead of
+	// echoing the seed back or returning nothing, append a fresh random
+	// anecdote so /anec never returns empty. The non-sequitur is the joke.
+	if !continued && opts.Length == LengthUnbounded {
+		if start := idx.randomStart(e.rng); start != nil {
+			fresh := append([]string(nil), start...)
+			freshAnchor := fresh
+			for j := 0; j < cfg.maxWords; j++ {
+				next, ok := idx.next(e.rng, freshAnchor, &cfg.orderProbs)
+				if !ok {
+					break
+				}
+				fresh = append(fresh, next)
+				freshAnchor = tailWords(fresh, maxOrder)
+			}
+			result = append(result, coldOpenSeparator+strings.Join(fresh, " "))
+		}
+	}
+
 	return strings.Join(result, " ")
+}
+
+// tailWords returns the last n words of words, or all of them if shorter.
+func tailWords(words []string, n int) []string {
+	if len(words) <= n {
+		return words
+	}
+	return words[len(words)-n:]
 }
 
 // Bridge returns the longest suffix of contextText that appears as a prefix
@@ -290,11 +416,11 @@ func (e *Engine) Generate(transitions []Transition, opts GenerateOptions) string
 func (e *Engine) Bridge(transitions []Transition, contextText string) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	idx := newIndex(transitions)
+	idx := NewIndex(transitions)
 	return bridge(idx, contextText)
 }
 
-func bridge(idx *index, contextText string) string {
+func bridge(idx *Index, contextText string) string {
 	words := strings.Fields(contextText)
 	if len(words) == 0 {
 		return ""
