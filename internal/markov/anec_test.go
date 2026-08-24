@@ -19,10 +19,10 @@ func trainAll(t *testing.T, jokes ...string) ([]markov.Transition, *markov.Engin
 	return transitions, engine
 }
 
-// TestUnboundedContinuesPastLongSeed is the regression test for the /anec
-// echo bug: a seed longer than the length preset target used to be echoed
+// TestUnboundedContinuesPastLongGenPrefix is the regression test for the /anec
+// echo bug: a genPrefix longer than the length preset target used to be echoed
 // back verbatim because generation never attempted a continuation.
-func TestUnboundedContinuesPastLongSeed(t *testing.T) {
+func TestUnboundedContinuesPastLongGenPrefix(t *testing.T) {
 	jokes := []string{
 		"шёл медведь по лесу видит машина горит",
 		"шёл медведь по лесу видит заяц бежит",
@@ -33,11 +33,11 @@ func TestUnboundedContinuesPastLongSeed(t *testing.T) {
 	transitions, engine := trainAll(t, jokes...)
 
 	result := engine.Generate(transitions, markov.GenerateOptions{
-		Seed:   "шёл медведь по лесу",
-		Length: markov.LengthUnbounded,
+		GenPrefix: "шёл медведь по лесу",
+		Length:    markov.LengthUnbounded,
 	})
 	words := strings.Fields(result)
-	require.Greater(t, len(words), 4, "expected continuation past the 4-word seed, got %q", result)
+	require.Greater(t, len(words), 4, "expected continuation past the 4-word genPrefix, got %q", result)
 	require.Equal(t, "шёл", words[0])
 	require.Equal(t, "лесу", words[3])
 }
@@ -53,16 +53,16 @@ func TestUnboundedNeverExceedsCap(t *testing.T) {
 	transitions, engine := trainAll(t, jokes...)
 
 	result := engine.Generate(transitions, markov.GenerateOptions{
-		Seed:   "a",
-		Length: markov.LengthUnbounded,
+		GenPrefix: "a",
+		Length:    markov.LengthUnbounded,
 	})
 	require.LessOrEqual(t, len(strings.Fields(result)), 400, "unbounded must still cap total words")
 	require.NotEmpty(t, result)
 }
 
-// TestAnecLevel1PartialBridge is the "Шёл программист" case: the seed's tail
-// is unknown, but an earlier fragment bridges. The seed is echoed and the
-// continuation attaches at the known fragment.
+// TestAnecLevel1PartialBridge is the "Шёл программист" case: the genPrefix's
+// tail is unknown, but an earlier fragment bridges. The genPrefix is echoed and
+// the continuation attaches at the known fragment.
 func TestAnecLevel1PartialBridge(t *testing.T) {
 	// "шёл" continues, "программист" is unknown.
 	jokes := []string{
@@ -73,19 +73,19 @@ func TestAnecLevel1PartialBridge(t *testing.T) {
 	transitions, engine := trainAll(t, jokes...)
 
 	result := engine.Generate(transitions, markov.GenerateOptions{
-		Seed:   "шёл программист",
-		Length: markov.LengthUnbounded,
+		GenPrefix: "шёл программист",
+		Length:    markov.LengthUnbounded,
 	})
 	words := strings.Fields(result)
 	require.GreaterOrEqual(t, len(words), 2, "expected echo + continuation, got %q", result)
 	require.Equal(t, "шёл", words[0])
-	// The continuation must have appended at least one corpus word after the seed.
-	require.Greater(t, len(words), 2, "expected continuation past the seed, got %q", result)
+	// The continuation must have appended at least one corpus word after the genPrefix.
+	require.Greater(t, len(words), 2, "expected continuation past the genPrefix, got %q", result)
 }
 
 // TestAnecLevel2ColdOpen is the "динозавры в древнем риме" case: nothing in
-// the seed bridges at all. The seed is echoed, then a fresh random anecdote
-// is appended rather than failing or echoing.
+// the genPrefix bridges at all. The genPrefix is echoed, then a fresh random
+// anecdote is appended rather than failing or echoing.
 func TestAnecLevel2ColdOpen(t *testing.T) {
 	jokes := []string{
 		"встречаются два программиста в баре",
@@ -95,20 +95,20 @@ func TestAnecLevel2ColdOpen(t *testing.T) {
 	transitions, engine := trainAll(t, jokes...)
 
 	// Random made-up words so no n-gram (not even a function word) bridges.
-	seed := "квазидинозавры бормочут квантовый телескоп"
+	genPrefix := "квазидинозавры бормочут квантовый телескоп"
 	result := engine.Generate(transitions, markov.GenerateOptions{
-		Seed:   seed,
-		Length: markov.LengthUnbounded,
+		GenPrefix: genPrefix,
+		Length:    markov.LengthUnbounded,
 	})
 	require.NotEmpty(t, result, "must never return empty")
-	require.Contains(t, result, "квазидинозавры", "seed must be echoed")
+	require.Contains(t, result, "квазидинозавры", "genPrefix must be echoed")
 	// There should be a fresh-joke boundary somewhere (newline separator).
 	require.Contains(t, result, "\n", "expected cold-open separator, got %q", result)
 }
 
-// TestAnecEmptySeedStillGenerates ensures /anec with no seed produces a
-// random anecdote rather than an empty string.
-func TestAnecEmptySeedStillGenerates(t *testing.T) {
+// TestAnecEmptyGenPrefixStillGenerates ensures /anec with no genPrefix
+// produces a random anecdote rather than an empty string.
+func TestAnecEmptyGenPrefixStillGenerates(t *testing.T) {
 	jokes := []string{
 		"встречаются два программиста в баре",
 		"программист заходит в бар заказывает пиво",

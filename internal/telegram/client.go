@@ -24,9 +24,9 @@ type Config struct {
 	ReplyGrowth float64
 	// ReplyMax caps the stacking reply probability.
 	ReplyMax float64
-	// ReactionProb is the chance that a triggered reply is a bare reaction
-	// (emoji / kaomoji) instead of generated text.
-	ReactionProb float64
+	// ChanceBasedReplyProb is the chance that a triggered reply is a bare
+	// chance-based reply (emoji / kaomoji) instead of generated text.
+	ChanceBasedReplyProb float64
 	// ChainMax is the maximum number of consecutive messages the bot sends in
 	// one reply event (always at least 1).
 	ChainMax int
@@ -38,8 +38,8 @@ type Config struct {
 	MaxContextWords int
 }
 
-// reactions is sent as a standalone reply instead of generated text.
-var reactions = []string{
+// chanceBasedReplies is sent as a standalone reply instead of generated text.
+var chanceBasedReplies = []string{
 	"😂", "🤡", "😏", "🔥", "💀", "😳", "🤌", "🙃", "😅", "😭",
 	"кек", "лол", "хз", "жесть", "мда", "бывает", "хых", "кринж",
 	"T_T", "...", "да ладно", "оно самое", "вот это поворот",
@@ -59,7 +59,7 @@ const helpText = `Привет! Я Нейрода́н — генерирую т�
 /off <фичи> — выключить стилизацию.
 /on или /off без аргументов — показать текущие настройки.
 
-Доступные фичи: caps, allcaps, punct, emotes, swearify, intellectualize
+Доступные фичи: caps, allcaps, punct, flair, swearify, intellectualize
 Например: /off swearify caps`
 
 // helpFeatures lists the stylization features for /on /off commands.
@@ -67,7 +67,7 @@ const helpFeatures = `Доступные фичи:
 caps — КАПС в случайном слове
 allcaps — фраза ЦЕЛИКОМ КАПСОМ
 punct — пунктуация (…, !, !!)
-emotes — реакции (😂, кек, лол)
+flair — реакции (😂, кек, лол)
 swearify — мат
 intellectualize — заумные слова
 
@@ -91,7 +91,7 @@ type trainRequest struct {
 
 type generateRequest struct {
 	LengthCfg string          `json:"length_cfg,omitempty"`
-	Seed      string          `json:"seed,omitempty"`
+	GenPrefix string          `json:"gen_prefix,omitempty"`
 	Context   string          `json:"context,omitempty"`
 	Styling   *markov.Styling `json:"styling,omitempty"`
 	Anecdote  bool            `json:"anecdote,omitempty"`
@@ -164,7 +164,7 @@ func (c *Client) handleCommand(msg *tgbotapi.Message) {
 // The command is un-stylized by default; a leading "s" flag
 // ("/anec s [текст]") opts into the chat's stylization settings.
 func (c *Client) anec(chatID int64, args string) {
-	stylize, seed := parseAnecdoteArgs(args)
+	stylize, genPrefix := parseAnecdoteArgs(args)
 
 	var styling *markov.Styling
 	if stylize {
@@ -173,7 +173,7 @@ func (c *Client) anec(chatID int64, args string) {
 
 	text := c.doGenerate(generateRequest{
 		LengthCfg: "short",
-		Seed:      seed,
+		GenPrefix: genPrefix,
 		ChatID:    chatID,
 		Styling:   styling,
 		Anecdote:  true,
@@ -184,9 +184,9 @@ func (c *Client) anec(chatID int64, args string) {
 }
 
 // parseAnecdoteArgs splits the raw /anec arguments into a stylize flag and
-// the seed text. A leading "s" (case-insensitive) as the first token opts
+// the genPrefix text. A leading "s" (case-insensitive) as the first token opts
 // into stylization: "/anec s [текст]".
-func parseAnecdoteArgs(args string) (stylize bool, seed string) {
+func parseAnecdoteArgs(args string) (stylize bool, genPrefix string) {
 	fields := strings.Fields(args)
 	if len(fields) > 0 && strings.EqualFold(fields[0], "s") {
 		stylize = true
@@ -250,7 +250,7 @@ func (c *Client) stylingFor(chatID int64) *markov.Styling {
 		Caps:     c.settings.IsEnabled(chatID, FeatureCaps),
 		AllCaps:  c.settings.IsEnabled(chatID, FeatureAllCaps),
 		Punct:    c.settings.IsEnabled(chatID, FeaturePunct),
-		Emotes:   c.settings.IsEnabled(chatID, FeatureEmotes),
+		Flair:    c.settings.IsEnabled(chatID, FeatureFlair),
 		Swearify: c.settings.IsEnabled(chatID, FeatureSwear),
 		Intel:    c.settings.IsEnabled(chatID, FeatureIntel),
 	}
@@ -286,11 +286,11 @@ func (c *Client) handleMessage(msg *tgbotapi.Message) {
 	go c.replyTo(chatID, state)
 }
 
-// replyTo sends one reply event: either a bare reaction or a chain of up to
-// ChainMax generated messages, each seeded by the previous one.
+// replyTo sends one reply event: either a bare chance-based reply or a chain
+// of up to ChainMax generated messages, each seeded by the previous one.
 func (c *Client) replyTo(chatID int64, state *chatState) {
-	if state.randFloat64() < c.cfg.ReactionProb {
-		c.send(chatID, reactions[state.randInt(len(reactions))])
+	if state.randFloat64() < c.cfg.ChanceBasedReplyProb {
+		c.send(chatID, chanceBasedReplies[state.randInt(len(chanceBasedReplies))])
 		return
 	}
 
@@ -339,12 +339,12 @@ func (c *Client) train(chatID int64, text string) {
 	}
 }
 
-// generate handles the /generate command, seeding generation with the
+// generate handles the /generate command, starting generation with the
 // optional user-supplied words.
-func (c *Client) generate(chatID int64, seed string) {
+func (c *Client) generate(chatID int64, genPrefix string) {
 	text := c.doGenerate(generateRequest{
 		LengthCfg: c.cfg.Length,
-		Seed:      seed,
+		GenPrefix: genPrefix,
 		ChatID:    chatID,
 		Styling:   c.stylingFor(chatID),
 	})

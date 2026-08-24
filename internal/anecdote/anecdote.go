@@ -2,9 +2,9 @@
 //
 // The model is a single precomputed markov.Index over the whole joke corpus,
 // built once at startup (or precomputed to a file) and then shared by every
-// /anec request. It never touches chat data: each request just bridges the
-// user's seed into this shared model, and the cold-open fallback guarantees
-// a response even for a fully out-of-vocabulary seed.
+// /anec request. It never touches chat data: each request just anchors the
+// user's genPrefix into this shared model, and the cold-open fallback
+// guarantees a response even for a fully out-of-vocabulary genPrefix.
 package anecdote
 
 import (

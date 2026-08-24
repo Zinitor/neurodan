@@ -128,9 +128,9 @@ func (h *Handler) generateHandler(w http.ResponseWriter, r *http.Request) {
 	var result string
 	for attempt := 0; attempt < 5; attempt++ {
 		result = h.engine.Generate(transitions, markov.GenerateOptions{
-			Seed:    req.Seed,
-			Context: req.Context,
-			Length:  length,
+			GenPrefix: req.GenPrefix,
+			Context:   req.Context,
+			Length:    length,
 		})
 		if result == "" {
 			break
@@ -154,8 +154,8 @@ func (h *Handler) generateHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, GenerateResponse{Text: h.engine.Stylize(result, styling)})
 }
 
-// anecdoteHandler serves a /anec request: it bridges the user's seed into the
-// precomputed joke model and generates an unbounded continuation. It never
+// anecdoteHandler serves a /anec request: it anchors the user's genPrefix into
+// the precomputed joke model and generates an unbounded continuation. It never
 // touches chat transitions or embeddings. Styling comes straight from the
 // request (which the bot uses to leave /anec un-stylized unless the user
 // opted in via the "s" flag).
@@ -173,8 +173,8 @@ func (h *Handler) anecdoteHandler(w http.ResponseWriter, req GenerateRequest) {
 	}
 
 	result := h.engine.GenerateIndex(h.anecdotes, markov.GenerateOptions{
-		Seed:   req.Seed,
-		Length: markov.LengthUnbounded,
+		GenPrefix: req.GenPrefix,
+		Length:    markov.LengthUnbounded,
 	})
 	writeJSON(w, http.StatusOK, GenerateResponse{Text: h.engine.Stylize(result, styling)})
 }

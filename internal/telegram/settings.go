@@ -14,20 +14,20 @@ const (
 	FeatureCaps    = "caps"
 	FeatureAllCaps = "allcaps"
 	FeaturePunct   = "punct"
-	FeatureEmotes  = "emotes"
+	FeatureFlair   = "flair"
 	FeatureSwear   = "swearify"
 	FeatureIntel   = "intellectualize"
 )
 
 // allFeatures lists every toggleable feature in help-display order.
-var allFeatures = []string{FeatureCaps, FeatureAllCaps, FeaturePunct, FeatureEmotes, FeatureSwear, FeatureIntel}
+var allFeatures = []string{FeatureCaps, FeatureAllCaps, FeaturePunct, FeatureFlair, FeatureSwear, FeatureIntel}
 
 // featureDesc maps a feature to its Russian help/status description.
 var featureDesc = map[string]string{
 	FeatureCaps:    "КАПС — заглавная буква в случайном слове",
 	FeatureAllCaps: "allcaps — фраза ЦЕЛИКОМ КАПСОМ",
 	FeaturePunct:   "punct — пунктуация (…, !, !!)",
-	FeatureEmotes:  "emotes — реакции и каомодзи (😂, кек, лол)",
+	FeatureFlair:  "flair — реакции и каомодзи (😂, кек, лол)",
 	FeatureSwear:   "swearify — мат",
 	FeatureIntel:   "intellectualize — заумные слова",
 }

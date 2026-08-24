@@ -21,7 +21,7 @@ func newAnecdoteIndex(t *testing.T, jokes ...string) *markov.Index {
 }
 
 func anecdoteGenerateRequest() *http.Request {
-	body, _ := json.Marshal(api.GenerateRequest{Anecdote: true, Seed: "привет мир", ChatID: 1})
+	body, _ := json.Marshal(api.GenerateRequest{Anecdote: true, GenPrefix: "привет мир", ChatID: 1})
 	req := httptest.NewRequest(http.MethodPost, "/generate", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	return req
@@ -108,7 +108,7 @@ func TestGenerateAnecdoteUsesPrecomputedIndex(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Same(t, idx, gotIdx, "handler must pass the precomputed index through")
-	require.Equal(t, "привет мир", gotOpts.Seed)
+	require.Equal(t, "привет мир", gotOpts.GenPrefix)
 	require.Equal(t, markov.LengthUnbounded, gotOpts.Length)
 }
 

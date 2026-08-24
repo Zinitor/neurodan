@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
@@ -24,6 +25,14 @@ var (
 
 func ensureORT() error {
 	ortOnce.Do(func() {
+		// dlopen only searches system paths, never the working directory,
+		// so hand it the absolute path of the bundled onnxruntime.so. If the
+		// library is absent here, fall back to the loader's default search.
+		if abs, err := filepath.Abs("onnxruntime.so"); err == nil {
+			if _, statErr := os.Stat(abs); statErr == nil {
+				ort.SetSharedLibraryPath(abs)
+			}
+		}
 		ortInitErr = ort.InitializeEnvironment()
 	})
 	return ortInitErr
@@ -54,9 +63,7 @@ func NewEmbedder(modelPath string) (*Embedder, error) {
 		outputNames[i] = info.Name
 	}
 
-	// Ensure the ORT library path is set. The onnxruntime_go package
-	// loads the .so at runtime via dlopen; we rely on it being on
-	// LD_LIBRARY_PATH or in the working directory.
+	// The ORT shared library path is resolved in ensureORT above.
 	session, err := ort.NewDynamicAdvancedSession(
 		modelPath, inputNames, outputNames, nil,
 	)

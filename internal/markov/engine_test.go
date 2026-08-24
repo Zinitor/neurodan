@@ -36,7 +36,7 @@ func TestTrainShortText(t *testing.T) {
 	require.Len(t, engine.Train("one two"), 1) // only (one)->two
 }
 
-func TestGenerateStartsFromSeed(t *testing.T) {
+func TestGenerateStartsFromGenPrefix(t *testing.T) {
 	engine := markov.NewEngine()
 	var transitions []markov.Transition
 	for _, word := range []string{"a b c", "a b d", "a b e", "a b f", "a b g", "a b h", "a b i", "a b j"} {
@@ -44,7 +44,7 @@ func TestGenerateStartsFromSeed(t *testing.T) {
 	}
 
 	result := engine.Generate(transitions, markov.GenerateOptions{
-		Seed:   "a b",
+		GenPrefix: "a b",
 		Length: markov.LengthShort,
 	})
 	words := strings.Fields(result)
@@ -55,18 +55,18 @@ func TestGenerateStartsFromSeed(t *testing.T) {
 
 func TestGenerateWithEmptyTransitions(t *testing.T) {
 	engine := markov.NewEngine()
-	result := engine.Generate(nil, markov.GenerateOptions{Seed: "hello"})
+	result := engine.Generate(nil, markov.GenerateOptions{GenPrefix: "hello"})
 	require.Equal(t, "", result)
 }
 
-func TestGenerateSelfInitiatesWithoutSeed(t *testing.T) {
+func TestGenerateSelfInitiatesWithoutGenPrefix(t *testing.T) {
 	engine := markov.NewEngine()
 	var transitions []markov.Transition
 	for _, s := range []string{"a b c", "a b d", "a b e", "a b f", "x y z", "x y w"} {
 		transitions = append(transitions, engine.Train(s)...)
 	}
 
-	// No seed, no context: the engine must still return something by starting
+	// No genPrefix, no context: the engine must still return something by starting
 	// from a random prefix.
 	result := engine.Generate(transitions, markov.GenerateOptions{Length: markov.LengthShort})
 	require.NotEmpty(t, result)
@@ -90,17 +90,17 @@ func TestGenerateRespectsLengthPreset(t *testing.T) {
 		transitions = append(transitions, engine.Train(s)...)
 	}
 
-	// The short preset's 1-5 word target is relative to the seed (2 words),
-	// so the total stays small but never echoes the seed verbatim.
-	short := engine.Generate(transitions, markov.GenerateOptions{Seed: "один два", Length: markov.LengthShort})
+	// The short preset's 1-5 word target is relative to the genPrefix (2 words),
+	// so the total stays small but never echoes the genPrefix verbatim.
+	short := engine.Generate(transitions, markov.GenerateOptions{GenPrefix: "один два", Length: markov.LengthShort})
 	require.LessOrEqual(t, len(strings.Fields(short)), 7, "short preset should stay tiny, got %q", short)
 	require.GreaterOrEqual(t, len(strings.Fields(short)), 3)
 
-	long := engine.Generate(transitions, markov.GenerateOptions{Seed: "один два", Length: markov.LengthLong})
+	long := engine.Generate(transitions, markov.GenerateOptions{GenPrefix: "один два", Length: markov.LengthLong})
 	require.GreaterOrEqual(t, len(strings.Fields(long)), 2)
 }
 
-func TestBridgePicksUpContext(t *testing.T) {
+func TestContextAnchorPicksUpContext(t *testing.T) {
 	engine := markov.NewEngine()
 	var transitions []markov.Transition
 	for _, s := range []string{"a b c", "a b d", "a b e", "b c x", "b c y", "b c z", "a b c x", "a b c y"} {
@@ -109,18 +109,18 @@ func TestBridgePicksUpContext(t *testing.T) {
 
 	// "y z" is not a prefix, "z" is not a prefix; but "b c" is a suffix of
 	// "a b c" -> longest suffix that is a prefix is "b c".
-	seed := engine.Bridge(transitions, "x y b c")
-	require.Equal(t, "b c", seed)
+	anchor := engine.ContextAnchor(transitions, "x y b c")
+	require.Equal(t, "b c", anchor)
 }
 
-func TestBridgeReturnsEmptyWhenNothingMatches(t *testing.T) {
+func TestContextAnchorReturnsEmptyWhenNothingMatches(t *testing.T) {
 	engine := markov.NewEngine()
 	var transitions []markov.Transition
 	for _, s := range []string{"a b c", "a b d"} {
 		transitions = append(transitions, engine.Train(s)...)
 	}
-	require.Equal(t, "", engine.Bridge(transitions, "zzz yyy xxx"))
-	require.Equal(t, "", engine.Bridge(transitions, ""))
+	require.Equal(t, "", engine.ContextAnchor(transitions, "zzz yyy xxx"))
+	require.Equal(t, "", engine.ContextAnchor(transitions, ""))
 }
 
 func TestStylizeHandlesTinyInput(t *testing.T) {

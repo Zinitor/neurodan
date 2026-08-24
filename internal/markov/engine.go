@@ -35,7 +35,7 @@ const (
 	LengthMedium
 	LengthLong
 	// LengthUnbounded generates until the chain dead-ends or the preset's
-	// maxWords hard cap is hit. Used by /anec where the seed is a prompt to
+	// maxWords hard cap is hit. Used by /anec where the genPrefix is a prompt to
 	// continue, not a length target.
 	LengthUnbounded
 )
@@ -84,18 +84,18 @@ var lengthConfigs = map[LengthPreset]lengthConfig{
 	// long: 16-40 words, prefers order-3 so text is more grammatical.
 	LengthLong: {minWords: 16, maxWords: 40, orderProbs: [3]float64{0.05, 0.35, 0.6}},
 	// unbounded: generate until the chain dies or the hard cap (maxWords).
-	// The seed is a prompt to continue, never a length target.
+	// The genPrefix is a prompt to continue, never a length target.
 	LengthUnbounded: {minWords: 1, maxWords: 200, orderProbs: [3]float64{0.1, 0.35, 0.55}},
 }
 
 // GenerateOptions configures a single generation pass.
 type GenerateOptions struct {
-	// Seed, when non-empty, forces the generated text to start with these
+	// GenPrefix, when non-empty, forces the generated text to start with these
 	// words. Takes precedence over Context.
-	Seed string
-	// Context is recent conversation text. When Seed is empty, the longest
-	// suffix of Context that appears as a prefix in the model is used to seed
-	// generation, letting the output pick up the conversation.
+	GenPrefix string
+	// Context is recent conversation text. When GenPrefix is empty, the longest
+	// suffix of Context that appears as a prefix in the model is used as the
+	// starting words, letting the output pick up the conversation.
 	Context string
 	// Length selects the length preset. Defaults to LengthMedium.
 	Length LengthPreset
@@ -180,8 +180,8 @@ func (idx *Index) hasContinuation(window []string) bool {
 	return false
 }
 
-// randomStart returns a random order-1 prefix to seed generation from when no
-// seed or context is available. It returns nil if the model has no order-1
+// randomStart returns a random order-1 prefix to start generation from when no
+// genPrefix or context is available. It returns nil if the model has no order-1
 // transitions.
 func (idx *Index) randomStart(r *rand.Rand) []string {
 	order1 := idx.m[1]
@@ -287,16 +287,16 @@ func (e *Engine) Train(text string) []Transition {
 }
 
 // Generate produces a random walk through the transition graph according to
-// opts. Generation starts from opts.Seed, or — when Seed is empty — from the
-// keyword bridge over opts.Context, or — when neither is available — from a
-// random order-1 prefix. It then continues for as many words as the length
-// preset asks for, or until no continuation exists.
+// opts. Generation starts from opts.GenPrefix, or — when GenPrefix is empty —
+// from the context anchor over opts.Context, or — when neither is available —
+// from a random order-1 prefix. It then continues for as many words as the
+// length preset asks for, or until no continuation exists.
 func (e *Engine) Generate(transitions []Transition, opts GenerateOptions) string {
 	return e.GenerateIndex(NewIndex(transitions), opts)
 }
 
-// coldOpenSeparator is inserted between the echoed seed and a fresh random
-// anecdote when nothing in the seed bridges into the model.
+// coldOpenSeparator is inserted between the echoed genPrefix and a fresh random
+// anecdote when nothing in the genPrefix bridges into the model.
 const coldOpenSeparator = "\n"
 
 // GenerateIndex is Generate, but over a prebuilt Index. It is safe for
@@ -312,16 +312,16 @@ func (e *Engine) generateIndexLocked(idx *Index, opts GenerateOptions) string {
 		return ""
 	}
 
-	seed := opts.Seed
-	if seed == "" && opts.Context != "" {
-		seed = bridge(idx, opts.Context)
+	genPrefix := opts.GenPrefix
+	if genPrefix == "" && opts.Context != "" {
+		genPrefix = contextAnchor(idx, opts.Context)
 	}
 
 	var result []string
-	if seed != "" {
-		result = append(result, strings.Fields(seed)...)
+	if genPrefix != "" {
+		result = append(result, strings.Fields(genPrefix)...)
 	} else if start := idx.randomStart(e.rng); start != nil {
-		// No seed and no usable context: start from a random prefix so the
+		// No genPrefix and no usable context: start from a random prefix so the
 		// bot can still self-initiate.
 		result = append(result, start...)
 	}
@@ -334,19 +334,20 @@ func (e *Engine) generateIndexLocked(idx *Index, opts GenerateOptions) string {
 		cfg = lengthConfigs[LengthMedium]
 	}
 
-	// Level 1: the seed's tail may end in words that don't bridge. Walk the
-	// anchor backward (dropping trailing words) until the longest prefix that
-	// can continue is found. The full seed is echoed; only the continuation
-	// anchor shrinks. This is what makes "/anec шёл программист" continue from
-	// "шёл" when "программист" is out of vocabulary.
+	// Level 1: the genPrefix's tail may end in words that don't bridge. Walk
+	// the anchor backward (dropping trailing words) until the longest prefix
+	// that can continue is found. The full genPrefix is echoed; only the
+	// continuation anchor shrinks. This is what makes "/anec шёл программист"
+	// continue from "шёл" when "программист" is out of vocabulary.
 	anchor := result
 	for len(anchor) > 1 && !idx.hasContinuation(anchor) {
 		anchor = anchor[:len(anchor)-1]
 	}
 
-	// For every preset the seed is a prompt, not a length budget: the target
-	// counts words past the seed so a long seed is never echoed back verbatim.
-	// LengthUnbounded caps at the preset's maxWords hard limit instead.
+	// For every preset the genPrefix is a prompt, not a length budget: the
+	// target counts words past the genPrefix so a long genPrefix is never
+	// echoed back verbatim. LengthUnbounded caps at the preset's maxWords hard
+	// limit instead.
 	target := cfg.minWords + e.rng.Intn(cfg.maxWords-cfg.minWords+1)
 	hardCap := opts.Length == LengthUnbounded
 	if hardCap {
@@ -379,9 +380,9 @@ func (e *Engine) generateIndexLocked(idx *Index, opts GenerateOptions) string {
 		break
 	}
 
-	// Level 2 cold open: nothing bridged at all — the seed shares no n-gram
-	// with the model (e.g. an entirely out-of-vocabulary seed). Instead of
-	// echoing the seed back or returning nothing, append a fresh random
+	// Level 2 cold open: nothing bridged at all — the genPrefix shares no n-gram
+	// with the model (e.g. an entirely out-of-vocabulary genPrefix). Instead of
+	// echoing the genPrefix back or returning nothing, append a fresh random
 	// anecdote so /anec never returns empty. The non-sequitur is the joke.
 	if !continued && opts.Length == LengthUnbounded {
 		if start := idx.randomStart(e.rng); start != nil {
@@ -410,17 +411,17 @@ func tailWords(words []string, n int) []string {
 	return words[len(words)-n:]
 }
 
-// Bridge returns the longest suffix of contextText that appears as a prefix
-// in the model, suitable for use as a seed. It returns an empty string if no
-// usable bridge exists.
-func (e *Engine) Bridge(transitions []Transition, contextText string) string {
+// ContextAnchor returns the longest suffix of contextText that appears as a
+// prefix in the model, suitable for use as the generation prefix. It returns
+// an empty string if no usable anchor exists.
+func (e *Engine) ContextAnchor(transitions []Transition, contextText string) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	idx := NewIndex(transitions)
-	return bridge(idx, contextText)
+	return contextAnchor(idx, contextText)
 }
 
-func bridge(idx *Index, contextText string) string {
+func contextAnchor(idx *Index, contextText string) string {
 	words := strings.Fields(contextText)
 	if len(words) == 0 {
 		return ""
@@ -437,9 +438,9 @@ func bridge(idx *Index, contextText string) string {
 	return ""
 }
 
-// stylizeEmotes is a curated list of Russian-friendly reactions appended to
+// flairPool is a curated list of Russian-friendly trailing tokens appended to
 // generated text to give it emotional weight. Swearing lives in swearify.
-var stylizeEmotes = []string{
+var flairPool = []string{
 	"😂", "🤡", "😏", "🔥", "💀", "😳", "🤌", "🙃", "😅", "😭",
 	"кек", "лол", "хз", "упс", "жесть", "мда", "хых", "бывает",
 	"T_T", "...", "ну...", "да ладно", "оно самое", "вот это поворот",
@@ -476,8 +477,8 @@ type Styling struct {
 	AllCaps bool `json:"allcaps"`
 	// Punct adds energetic trailing punctuation ("...", "!", "!!").
 	Punct bool `json:"punct"`
-	// Emotes appends reactions / kaomoji ("😂", "кек", "лол").
-	Emotes bool `json:"emotes"`
+	// Flair appends reactions / kaomoji ("😂", "кек", "лол").
+	Flair bool `json:"flair"`
 	// Swearify injects Russian profanity.
 	Swearify bool `json:"swearify"`
 	// Intel injects high-register "intellectual" filler.
@@ -487,7 +488,7 @@ type Styling struct {
 // DefaultStyling enables every stylization pass.
 func DefaultStyling() Styling {
 	return Styling{
-		Caps: true, AllCaps: true, Punct: true, Emotes: true,
+		Caps: true, AllCaps: true, Punct: true, Flair: true,
 		Swearify: true, Intel: true,
 	}
 }
@@ -549,9 +550,9 @@ func stylize(text string, s Styling, r *rand.Rand) string {
 		}
 	}
 
-	// 4. Trailing reaction (~18%).
-	if s.Emotes && r.Float64() < 0.18 {
-		result += " " + stylizeEmotes[r.Intn(len(stylizeEmotes))]
+	// 4. Trailing flair (~18%).
+	if s.Flair && r.Float64() < 0.18 {
+		result += " " + flairPool[r.Intn(len(flairPool))]
 	}
 
 	// 5. Register injection: both registers can fire so swearing and

@@ -24,7 +24,7 @@ func main() {
 		ReplyBase:       envFloat("REPLY_BASE", 0.10),
 		ReplyGrowth:     envFloat("REPLY_GROWTH", 0.10),
 		ReplyMax:        envFloat("REPLY_MAX", 0.60),
-		ReactionProb:    envFloat("REACTION_PROB", 0.20),
+		ChanceBasedReplyProb: envFloat("CHANCE_BASED_REPLY_PROB", 0.20),
 		ChainMax:        envInt("CHAIN_MAX", 3),
 		Length:          getEnv("LENGTH", "medium"),
 		WindowSize:      envInt("WINDOW_SIZE", 15),

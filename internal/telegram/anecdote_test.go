@@ -11,22 +11,22 @@ func TestParseAnecdoteArgs(t *testing.T) {
 		name        string
 		args        string
 		wantStylize bool
-		wantSeed    string
+		wantPrefix  string
 	}{
 		{"no args", "", false, ""},
-		{"seed only", "привет мир", false, "привет мир"},
-		{"s flag with seed", "s привет мир", true, "привет мир"},
+		{"genPrefix only", "привет мир", false, "привет мир"},
+		{"s flag with genPrefix", "s привет мир", true, "привет мир"},
 		{"bare s flag", "s", true, ""},
 		{"s flag uppercase", "S привет", true, "привет"},
 		{"s flag surrounded by spaces", "  s   привет  ", true, "привет"},
-		{"s flag not at start keeps seed", "пока s миру", false, "пока s миру"},
+		{"s flag not at start keeps genPrefix", "пока s миру", false, "пока s миру"},
 		{"multiple spaces collapse", "привет    мир", false, "привет мир"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotStylize, gotSeed := parseAnecdoteArgs(tt.args)
+			gotStylize, gotPrefix := parseAnecdoteArgs(tt.args)
 			require.Equal(t, tt.wantStylize, gotStylize)
-			require.Equal(t, tt.wantSeed, gotSeed)
+			require.Equal(t, tt.wantPrefix, gotPrefix)
 		})
 	}
 }

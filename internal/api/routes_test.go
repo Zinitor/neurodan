@@ -115,18 +115,18 @@ func TestTrainRequestJSON(t *testing.T) {
 }
 
 func TestGenerateRequestJSON(t *testing.T) {
-	req := api.GenerateRequest{Length: 10, Seed: "hello", ChatID: 12345}
+	req := api.GenerateRequest{Length: 10, GenPrefix: "hello", ChatID: 12345}
 	data, err := json.Marshal(req)
 	require.NoError(t, err)
 	require.Contains(t, string(data), "hello")
 	require.Contains(t, string(data), "12345")
 }
 
-func TestGenerateRequestOmitEmptySeed(t *testing.T) {
+func TestGenerateRequestOmitEmptyGenPrefix(t *testing.T) {
 	req := api.GenerateRequest{Length: 10, ChatID: 12345}
 	data, err := json.Marshal(req)
 	require.NoError(t, err)
-	require.NotContains(t, string(data), "seed")
+	require.NotContains(t, string(data), "gen_prefix")
 }
 
 func TestGenerateResponseJSON(t *testing.T) {
@@ -251,7 +251,7 @@ func TestGenerateHandler(t *testing.T) {
 		generateFn: func(transitions []markov.Transition, opts markov.GenerateOptions) string {
 			receivedTransitions = transitions
 			require.Equal(t, markov.LengthLong, opts.Length)
-			require.Equal(t, "seed", opts.Seed)
+			require.Equal(t, "seed", opts.GenPrefix)
 			return "a b c"
 		},
 	}
@@ -260,7 +260,7 @@ func TestGenerateHandler(t *testing.T) {
 	handler := api.NewHandler(storage, engine, embedder)
 	router := api.NewRouter(handler)
 
-	body, _ := json.Marshal(api.GenerateRequest{LengthCfg: "long", Seed: "seed", ChatID: 99})
+	body, _ := json.Marshal(api.GenerateRequest{LengthCfg: "long", GenPrefix: "seed", ChatID: 99})
 	req := httptest.NewRequest(http.MethodPost, "/generate", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -280,7 +280,7 @@ func TestGenerateHandlerForwardsContext(t *testing.T) {
 	engine := &mockEngine{
 		generateFn: func(transitions []markov.Transition, opts markov.GenerateOptions) string {
 			require.Equal(t, "last fifteen messages", opts.Context)
-			require.Empty(t, opts.Seed)
+			require.Empty(t, opts.GenPrefix)
 			return "result"
 		},
 	}
