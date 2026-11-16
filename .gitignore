@@ -19,3 +19,11 @@ models/*.onnx_data
 # Go build artifacts
 /bot
 /generator
+
+# Local data — chat training data must never be committed
+*.db
+*.sqlite
+*.sqlite3
+data/
+samples/
+services/generator/generator.db

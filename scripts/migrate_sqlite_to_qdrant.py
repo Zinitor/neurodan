@@ -12,6 +12,7 @@ Prerequisites:
 
 Run: python migrate_sqlite_to_qdrant.py
 """
+import os
 
 import json
 import os
@@ -24,7 +25,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 
 def migrate():
     # --- Configuration ---
-    SQLITE_DB = "/home/aeremin/projects/neurodan/services/generator/generator.db"
+    SQLITE_DB = os.environ.get("SQLITE_DB", "./services/generator/generator.db")
     QDRANT_URL = "http://localhost:6333"
     # -------------------
 
