@@ -1,14 +1,12 @@
 # Bot Service Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Build a Telegram bot that interfaces with the Generator Service to learn from and generate text.
 
 **Architecture:** An asynchronous bot using `aiogram` that delegates all "intelligence" to the Generator Service via a dedicated HTTP client.
 
 **Tech Stack:** aiogram (v3.x), httpx, pydantic-settings.
 
-**Spec:** `docs/superpowers/specs/2026-08-20-decoupled-architecture-design.md`
+**Spec:** `docs/design/2026-08-20-decoupled-architecture-design.md`
 
 ## Global Constraints
 - Python version: `>=3.14`

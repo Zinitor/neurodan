@@ -1,170 +1,55 @@
-# Neurodan Go Rewrite — Running Instructions
+# neurodan
 
-## Overview
+A Telegram bot that learns how a chat talks and answers in the same style. It began as a bot for a group chat of friends, so the point was entertainment, not a product.
 
-Neurodan is a Telegram bot that learns from chat messages and generates new text using a 2nd-order Markov chain, with semantic similarity deduplication via sentence embeddings (all-MiniLM-L6-v2, ONNX Runtime).
+Two Go services in one module:
 
-This is the Go rewrite of the original Python microservice application.
+- **bot** (`cmd/bot`) — Telegram long polling. Takes the incoming message, calls the generator over HTTP, posts the answer back.
+- **generator** (`cmd/generator`) — HTTP API. Trains a 2nd-order Markov chain over stored phrases, embeds each phrase with `all-MiniLM-L6-v2` through ONNX Runtime, and rejects near-duplicates through Qdrant (cosine similarity ≥ 0.85, up to 5 generation retries).
 
-## Prerequisites
+## Why it exists
 
-- Go 1.22+
-- Docker (optional, for compose setup) — not available in this environment, but config exists
-- `.env` file with required environment variables
+A small system to try three things end to end: splitting one bot into two services with a plain HTTP boundary, isolating data per chat, and using vector search as a deduplication filter instead of a hand-written rule.
 
-## Environment Variables
+## Stack
 
-Create a `.env` file in the project root with:
+| Layer | Choice |
+|---|---|
+| Language | Go 1.22, single module, two `cmd/` binaries |
+| Router | `chi` |
+| Vector store | Qdrant (`markov_transitions`, `sentence_embeddings` collections) |
+| Embeddings | `all-MiniLM-L6-v2`, 384-dim, exported to ONNX and served by `onnxruntime_go` |
+| Telegram | `go-telegram-bot-api` |
+| Tests | `testify` |
 
-```
-BOT_TOKEN=your_telegram_bot_token
-GENERATOR_URL=http://localhost:8000
-QDRANT_HOST=localhost
-QDRANT_PORT=6334
-MODEL_PATH=models/model.onnx
-```
+## Running
 
-## Project Structure
-
-```
-neurodan/
-├── cmd/
-│   ├── bot/main.go    # Telegram bot entry point
-│   └── generator/main.go  # HTTP API server entry point
-├── internal/
-│   ├── markov/engine.go         # 2nd-order Markov chain
-│   ├── embedding/embedder.go   # ONNX sentence embeddings
-│   ├── storage/                # Qdrant client + transitions + embeddings
-│   ├── api/                    # HTTP routes + schemas
-│   └── telegram/               # Telegram client
-├── models/
-│   └── model.onnx              # Exported ONNX model (already generated)
-├── scripts/
-│   └── export_model.py         # One-time model export script
-├── go.mod
-├── go.sum
-├── Dockerfile.bot
-├── Dockerfile.generator
-└── docker-compose.yml
-```
-
-## Running Without Docker
-
-### 1. Start Qdrant
-
-Qdrant is the vector database used for storing Markov transitions and sentence embeddings.
+Environment: `BOT_TOKEN`, `GENERATOR_URL`, `QDRANT_HOST`, `QDRANT_PORT`, `MODEL_PATH`.
 
 ```bash
-# Start Qdrant via Docker
-docker run -d --name qdrant -p 6333:6333 -p 6334:6334 qdrant/qdrant:latest
-
-# Or start locally if already running
+docker compose up          # bot + generator + Qdrant
+go test ./...              # unit tests, no external services needed for the unit layer
 ```
 
-### 2. Build and Run the Generator Service
+## Layout
 
-```bash
-go build -o generator ./cmd/generator
-./generator
+```
+cmd/bot, cmd/generator        entry points
+internal/api                  HTTP routes, handlers, schemas
+internal/markov               2nd-order chain over word triples
+internal/embedding            ONNX session + tokenizer wrapper
+internal/storage              Qdrant client, transitions, embeddings
+internal/telegram             thin client over the Bot API
+docs/design                   design spec and implementation notes
+models                        tokenizer assets for the embedding model
 ```
 
-Or using `go run`:
+Every package under `internal/` carries its own `_test.go`. The API layer has the widest coverage (route and handler behaviour, ~10 KB of tests), since that is where the two services meet.
 
-```bash
-go run ./cmd/generator
-```
+## Status and limits
 
-The generator will start on `http://localhost:8000` by default (or override with `PORT` env var).
+Personal experiment. It has not run under production load, has no scale story, and the numbers that matter for a real deployment (throughput, latency under concurrency, Qdrant sizing) were never measured. The Python predecessors of both services are still in the repository (`api/`, `services/bot/`) for comparison; the Go services are the direction the project was heading.
 
-### 3. Build and Run the Bot Service
+## License
 
-```bash
-go build -o bot ./cmd/bot
-./bot
-```
-
-Or:
-
-```bash
-go run ./cmd/bot
-```
-
-The bot will start long-polling Telegram. It needs `BOT_TOKEN` and `GENERATOR_URL` env vars.
-
-### 4. Test the Endpoints
-
-**Health check:**
-```bash
-curl http://localhost:8000/health
-# {"status":"ok"}
-```
-
-**Train (send a message to the bot on Telegram, or use curl):**
-```bash
-curl -X POST http://localhost:8000/train -H "Content-Type: application/json" -d '{"text":"hello world test","chat_id":123456789}'
-# {"status":"success"}
-```
-
-**Generate:**
-```bash
-curl -X POST http://localhost:8000/generate -H "Content-Type: application/json" -d '{"length":10,"seed":"hello","chat_id":123456789}'
-# {"text":"generated text here"}
-```
-
-## Running With Docker Compose
-
-If Docker is available:
-
-```bash
-docker compose up -d
-```
-
-This starts:
-- **qdrant** — vector database on ports 6333/6334
-- **generator** — HTTP API on port 8000
-- **bot** — Telegram bot (depends on generator)
-
-Environment variables are loaded from `.env` and the compose file.
-
-## Model — Already Exported
-
-The ONNX model (`models/model.onnx`) has already been exported using `sentence-transformers[onnx]` and `optimum`. No re-export is needed.
-
-The model was generated with:
-```bash
-uv pip install "sentence-transformers[onnx]"
-/home/aeremin/projects/neurodan/.venv/bin/python scripts/export_model.py
-```
-
-## Development
-
-### Running Tests
-
-```bash
-go test ./...
-```
-
-All tests should pass (37+ tests across all packages).
-
-### Running Lint/Typecheck
-
-```bash
-go vet ./...
-go build ./...
-```
-
-## How the System Works
-
-1. **Bot receives a message** → calls `POST /train` on the generator with `{text, chat_id}`
-2. **Generator trains Markov chain** → stores 2nd-order transitions in Qdrant (`markov_transitions` collection)
-3. **Generator computes embedding** → stores sentence embedding in Qdrant (`sentence_embeddings` collection)
-4. **Bot `/generate` command** → calls `POST /generate` with `{length, seed, chat_id}`
-5. **Generator generates text** → weighted random walk through Markov chain
-6. **Generator checks similarity** → if generated text is too semantically similar to existing text (cosine > 0.85), regenerates (max 5 retries)
-7. **Response sent** → unique text back to Telegram user
-
-## Initial Data — No Seed Needed
-
-Unlike the Python version which had a `scripts/seed_db.py` to bulk-train from `result.json`, the Go version **trains organically** as Telegram messages arrive. Every text message sent in Telegram chats is forwarded to the generator for training.
-
-If you want to initially populate the Markov chain, you can send training messages via the `/train` endpoint or via the Telegram bot.
+MIT — see [LICENSE](LICENSE).

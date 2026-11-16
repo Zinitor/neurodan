@@ -1,14 +1,12 @@
 # Generator Service Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Build a stateful Markov chain text generation service with a REST API.
 
 **Architecture:** A FastAPI application using an asynchronous SQLite database via SQLAlchemy. The core logic is encapsulated in a `MarkovEngine` class that manages word transitions.
 
 **Tech Stack:** FastAPI, Uvicorn, SQLAlchemy, aiosqlite, Pydantic.
 
-**Spec:** `docs/superpowers/specs/2026-08-20-decoupled-architecture-design.md`
+**Spec:** `docs/design/2026-08-20-decoupled-architecture-design.md`
 
 ## Global Constraints
 - Python version: `>=3.14`

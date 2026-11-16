@@ -1,14 +1,12 @@
 # Neurodan Go Rewrite — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Rewrite the Python bot and generator services in Go, with Qdrant for storage and ONNX Runtime for sentence embeddings, adding per-chat data isolation.
 
 **Architecture:** Two Go services (bot + generator) in a single module. Bot handles Telegram long-polling and proxies to the generator. Generator serves an HTTP API, trains 2nd-order Markov chains, computes sentence embeddings via ONNX, and stores everything in Qdrant with per-chat isolation.
 
 **Tech Stack:** Go 1.22, chi router, qdrant/go-client, yalue/onnxruntime_go, go-telegram-bot-api, testify
 
-**Spec:** `docs/superpowers/specs/2026-08-20-golang-rewrite-design.md`
+**Spec:** `docs/design/2026-08-20-golang-rewrite-design.md`
 
 ## Global Constraints
 
